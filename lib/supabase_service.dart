@@ -303,16 +303,8 @@ class SupabaseService {
       return embedding;
     } catch (e) {
       debugPrint('❌ Error generando embedding con FaceNet: $e');
-
-      // Fallback a embedding simulado si hay error
-      final random = math.Random();
-      final embedding = List<double>.filled(512, 0.0);
-
-      for (int i = 0; i < embedding.length; i++) {
-        embedding[i] = (random.nextDouble() * 2) - 1; // Valores entre -1 y 1
-      }
-
-      return embedding;
+      // Propagar error para que el caller maneje y no se guarden datos inválidos
+      rethrow;
     }
   }
 

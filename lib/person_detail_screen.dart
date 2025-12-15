@@ -44,16 +44,16 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
       setState(() => _isLoading = false);
       return;
     }
-    
+
     _personId = args['personId'];
-    
+
     try {
       final persons = await SupabaseService.getPersons();
       _person = persons.firstWhere(
         (p) => p['id'] == _personId,
         orElse: () => throw Exception('Persona no encontrada'),
       );
-      
+
       _nameController.text = _person?['name'] ?? '';
       _descriptionController.text = _person?['description'] ?? '';
     } catch (e) {
@@ -70,7 +70,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
         imageQuality: 85,
         maxWidth: 800,
       );
-      
+
       if (pickedFiles.isNotEmpty) {
         setState(() {
           _newImages.addAll(pickedFiles.map((file) => File(file.path)));
@@ -91,7 +91,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
         imageQuality: 85,
         maxWidth: 800,
       );
-      
+
       if (pickedFile != null) {
         setState(() {
           _newImages.add(File(pickedFile.path));
@@ -115,7 +115,8 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Eliminar imagen'),
-        content: const Text('¿Estás seguro de que quieres eliminar esta imagen?'),
+        content:
+            const Text('¿Estás seguro de que quieres eliminar esta imagen?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -131,7 +132,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
         ],
       ),
     );
-    
+
     if (confirmed == true) {
       try {
         final success = await SupabaseService.deleteFaceImage(imageId);
@@ -157,55 +158,75 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
 
   Future<void> _uploadNewImages() async {
     if (_newImages.isEmpty) return;
-    
+
     setState(() {
       _isUploading = true;
       _errorMessage = null;
     });
-    
+
     try {
       int successfulUploads = 0;
-      
+      int skippedNoFace = 0;
+      int failedSaves = 0;
+
       for (final imageFile in _newImages) {
         try {
           // Leer imagen como bytes
           final imageBytes = await imageFile.readAsBytes();
-          
-          // Subir imagen
-          final fileName = 'person_${_personId}_add_${DateTime.now().millisecondsSinceEpoch}_$successfulUploads.jpg';
+
+          // Generar embedding primero para validar rostro
+          final embedding = await _generateFaceEmbedding(imageBytes);
+          if (embedding.isEmpty || embedding.length < 128) {
+            skippedNoFace++;
+            continue;
+          }
+
+          // Subir imagen si el embedding es válido
+          final fileName =
+              'person_${_personId}_add_${DateTime.now().millisecondsSinceEpoch}_$successfulUploads.jpg';
           final imageUrl = await SupabaseService.uploadImage(
             Uint8List.fromList(imageBytes),
             fileName,
           );
-          
-          // Generar embedding usando el servicio real
-          final embedding = await _generateFaceEmbedding(imageBytes);
-          
+
           // Añadir a la persona
-          await SupabaseService.addFaceImage(
+          final ok = await SupabaseService.addFaceImage(
             personId: _personId,
             imageUrl: imageUrl,
             embedding: embedding,
           );
-          
-          successfulUploads++;
+
+          if (ok) {
+            successfulUploads++;
+          } else {
+            failedSaves++;
+          }
         } catch (e) {
           debugPrint('Error subiendo imagen individual: $e');
+          failedSaves++;
         }
       }
-      
+
       if (successfulUploads > 0) {
+        final msg = skippedNoFace > 0 || failedSaves > 0
+            ? '✅ $successfulUploads añadida(s). Omitidas sin rostro: $skippedNoFace, fallidas: $failedSaves'
+            : '✅ $successfulUploads imagen(es) añadida(s)';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('✅ $successfulUploads imagen(es) añadida(s)'),
+            content: Text(msg),
             backgroundColor: Colors.green,
           ),
         );
-        
+
         // Recargar datos y limpiar nuevas imágenes
         await _loadPersonData();
         setState(() {
           _newImages.clear();
+        });
+      } else {
+        setState(() {
+          _errorMessage =
+              'No se pudieron procesar imágenes válidas. Reintenta con mejor encuadre/iluminación.';
         });
       }
     } catch (e) {
@@ -226,19 +247,19 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
       });
       return;
     }
-    
+
     setState(() {
       _isUploading = true;
       _errorMessage = null;
     });
-    
+
     try {
       final success = await SupabaseService.updatePerson(
         id: _personId,
         name: _nameController.text.trim(),
         description: _descriptionController.text.trim(),
       );
-      
+
       if (success) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -246,7 +267,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
             backgroundColor: Colors.green,
           ),
         );
-        
+
         await _loadPersonData();
         setState(() => _isEditing = false);
       }
@@ -264,7 +285,8 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Eliminar persona'),
-        content: const Text('¿Estás seguro de que quieres eliminar esta persona y todas sus imágenes? Esta acción no se puede deshacer.'),
+        content: const Text(
+            '¿Estás seguro de que quieres eliminar esta persona y todas sus imágenes? Esta acción no se puede deshacer.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -280,7 +302,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
         ],
       ),
     );
-    
+
     if (confirmed == true) {
       try {
         final success = await SupabaseService.deletePerson(_personId);
@@ -297,23 +319,17 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
 
   Future<List<double>> _generateFaceEmbedding(List<int> imageBytes) async {
     try {
-      return await SupabaseService.generateFaceEmbedding(
+      final embedding = await SupabaseService.generateFaceEmbedding(
         Uint8List.fromList(imageBytes),
       );
+      if (embedding.isEmpty || embedding.length < 128) {
+        throw Exception('No se detectó un rostro válido');
+      }
+      return embedding;
     } catch (e) {
       debugPrint('Error generando embedding: $e');
-      return _generateMockEmbedding(imageBytes);
+      rethrow;
     }
-  }
-
-  Future<List<double>> _generateMockEmbedding(List<int> imageBytes) async {
-    final embedding = List<double>.filled(512, 0.0);
-    final random = Random(imageBytes.fold<int>(0, (int prev, byte) => prev + byte));
-    for (int i = 0; i < embedding.length; i++) {
-      embedding[i] = (random.nextDouble() * 2) - 1;
-    }
-    
-    return embedding;
   }
 
   Widget _buildImageGrid(List<dynamic> images) {
@@ -339,7 +355,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
         ),
       );
     }
-    
+
     return GridView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
@@ -353,7 +369,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
       itemBuilder: (context, index) {
         final image = images[index];
         final imageUrl = image['imageUrl'] as String?;
-        
+
         return Stack(
           children: [
             Container(
@@ -400,7 +416,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
 
   Widget _buildNewImagesGrid() {
     if (_newImages.isEmpty) return Container();
-    
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -505,7 +521,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
         ),
       );
     }
-    
+
     if (_errorMessage != null && _person == null) {
       return Scaffold(
         appBar: AppBar(
@@ -520,12 +536,12 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
         ),
       );
     }
-    
+
     final images = _person?['images'] as List<dynamic>? ?? [];
     final personName = _person?['name'] as String? ?? 'Sin nombre';
     final personDescription = _person?['description'] as String?;
     final personId = _person?['id'] as int?;
-    
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Detalles de Persona'),
@@ -582,9 +598,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
                         ),
                       ],
                     ),
-                    
                     const SizedBox(height: 10),
-                    
                     Row(
                       children: [
                         const Icon(Icons.description, color: Colors.blue),
@@ -610,9 +624,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
                         ),
                       ],
                     ),
-                    
                     const SizedBox(height: 10),
-                    
                     Row(
                       children: [
                         const Icon(Icons.photo_library, color: Colors.blue),
@@ -634,7 +646,6 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
                           ),
                       ],
                     ),
-                    
                     if (_isEditing)
                       Column(
                         children: [
@@ -643,7 +654,8 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
                             children: [
                               Expanded(
                                 child: ElevatedButton(
-                                  onPressed: _isUploading ? null : _updatePersonInfo,
+                                  onPressed:
+                                      _isUploading ? null : _updatePersonInfo,
                                   child: _isUploading
                                       ? const SizedBox(
                                           height: 20,
@@ -662,7 +674,8 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
                                     setState(() {
                                       _isEditing = false;
                                       _nameController.text = personName;
-                                      _descriptionController.text = personDescription ?? '';
+                                      _descriptionController.text =
+                                          personDescription ?? '';
                                     });
                                   },
                                   child: const Text('Cancelar'),
@@ -676,9 +689,9 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
                 ),
               ),
             ),
-            
+
             const SizedBox(height: 20),
-            
+
             // Imágenes existentes
             const Text(
               'Imágenes registradas:',
@@ -689,10 +702,10 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
             ),
             const SizedBox(height: 10),
             _buildImageGrid(images),
-            
+
             // Nuevas imágenes
             _buildNewImagesGrid(),
-            
+
             // Botones para añadir más imágenes
             if (!_isEditing)
               Column(
@@ -740,7 +753,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
                   ),
                 ],
               ),
-            
+
             // Mensaje de error
             if (_errorMessage != null)
               Container(
@@ -764,7 +777,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
                   ],
                 ),
               ),
-            
+
             const SizedBox(height: 20),
           ],
         ),

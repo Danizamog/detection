@@ -7,7 +7,27 @@ class PersonsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Leer modo opcional desde la navegación
+    final args = ModalRoute.of(context)?.settings.arguments;
+    final String? mode =
+        (args is Map<String, dynamic>) ? args['mode'] as String? : null;
+    final bool addImagesMode = mode == 'add-images';
     final persons = Provider.of<List<Map<String, dynamic>>>(context);
+
+    // Responsive values
+    final screenSize = MediaQuery.of(context).size;
+    final isSmallScreen = screenSize.width < 400;
+    final isMediumScreen = screenSize.width >= 400 && screenSize.width < 600;
+    final gridCrossAxisCount = isSmallScreen
+        ? 1
+        : isMediumScreen
+            ? 2
+            : 3;
+    final padding = isSmallScreen
+        ? 12.0
+        : isMediumScreen
+            ? 16.0
+            : 20.0;
 
     return Scaffold(
       floatingActionButton: FloatingActionButton.extended(
@@ -73,16 +93,46 @@ class PersonsScreen extends StatelessWidget {
             ),
           ),
 
+          // Banner guía si venimos en modo "añadir imágenes"
+          if (addImagesMode)
+            SliverToBoxAdapter(
+              child: Container(
+                margin: EdgeInsets.fromLTRB(padding, 12, padding, 0),
+                padding: EdgeInsets.all(padding),
+                decoration: BoxDecoration(
+                  color: Colors.purple[50],
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.purple.shade200),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.info_outline, color: Colors.purple),
+                    SizedBox(width: isSmallScreen ? 6 : 8),
+                    Expanded(
+                      child: Text(
+                        'Selecciona una persona y usa los botones "Galería" o "Cámara" en su detalle para añadir nuevas imágenes.',
+                        style: TextStyle(
+                          color: Colors.purple,
+                          fontSize: isSmallScreen ? 11 : 12,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
           // Lista de personas
           if (persons.isNotEmpty)
             SliverPadding(
-              padding: const EdgeInsets.all(16),
+              padding: EdgeInsets.all(padding),
               sliver: SliverGrid(
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
-                  crossAxisSpacing: 16,
-                  mainAxisSpacing: 16,
-                  childAspectRatio: 0.8,
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: gridCrossAxisCount,
+                  crossAxisSpacing: padding,
+                  mainAxisSpacing: padding,
+                  childAspectRatio: 0.75,
                 ),
                 delegate: SliverChildBuilderDelegate(
                   (context, index) {

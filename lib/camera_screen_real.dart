@@ -22,10 +22,13 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
   bool _isRecognizing = false;
   String _statusMessage = 'Inicializando cámara...';
   XFile? _capturedImage;
+  Uint8List? _capturedImageBytes;
   Map<String, dynamic>? _recognizedPerson;
   double _recognitionConfidence = 0.0;
   Timer? _recognitionTimer;
   bool _showCapturePreview = false;
+  int _currentCameraIndex = 0;
+  bool _isSwitchingCamera = false;
 
   @override
   void initState() {
@@ -54,26 +57,15 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
         return;
       }
 
-      final camera = _cameras!.firstWhere(
+      // Buscar cámara trasera primero
+      _currentCameraIndex = _cameras!.indexWhere(
         (c) => c.lensDirection == CameraLensDirection.back,
-        orElse: () => _cameras!.first,
       );
+      if (_currentCameraIndex == -1) _currentCameraIndex = 0;
 
-      _controller = CameraController(
-        camera,
-        ResolutionPreset.medium,
-        enableAudio: false,
-      );
+      await _initializeCameraController(_currentCameraIndex);
 
-      await _controller!.initialize();
-
-      setState(() {
-        _isCameraInitialized = true;
-        _isLoading = false;
-        _statusMessage = 'Cámara lista - Apunta a un rostro';
-      });
-
-      // Iniciar reconocimiento continuo cada 3 segundos
+      // Iniciar reconocimiento continuo cada 2 segundos
       _startContinuousRecognition();
     } catch (e) {
       setState(() {
@@ -96,20 +88,60 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
     }
   }
 
+  Future<void> _initializeCameraController(int cameraIndex) async {
+    if (_controller != null) {
+      await _controller!.dispose();
+    }
+
+    _controller = CameraController(
+      _cameras![cameraIndex],
+      ResolutionPreset.high,
+      enableAudio: false,
+      imageFormatGroup: ImageFormatGroup.jpeg,
+    );
+
+    await _controller!.initialize();
+
+    if (mounted) {
+      setState(() {
+        _isCameraInitialized = true;
+        _isLoading = false;
+        _isSwitchingCamera = false;
+        _statusMessage = 'Cámara lista - Apunta a un rostro';
+      });
+    }
+  }
+
+  Future<void> _switchCamera() async {
+    if (_cameras == null || _cameras!.length < 2) return;
+
+    setState(() {
+      _isSwitchingCamera = true;
+      _isCameraInitialized = false;
+    });
+
+    _currentCameraIndex = (_currentCameraIndex + 1) % _cameras!.length;
+    await _initializeCameraController(_currentCameraIndex);
+  }
+
   void _startContinuousRecognition() {
     _recognitionTimer =
-        Timer.periodic(const Duration(seconds: 3), (timer) async {
+        Timer.periodic(const Duration(seconds: 2), (timer) async {
       if (_isCameraInitialized &&
           !_isProcessing &&
           !_isRecognizing &&
-          !_showCapturePreview) {
+          !_showCapturePreview &&
+          !_isSwitchingCamera) {
         await _processFrame();
       }
     });
   }
 
   Future<void> _processFrame() async {
-    if (!_isCameraInitialized || _isProcessing || _showCapturePreview) return;
+    if (!_isCameraInitialized ||
+        _isProcessing ||
+        _showCapturePreview ||
+        _isSwitchingCamera) return;
 
     setState(() {
       _isRecognizing = true;
@@ -120,17 +152,23 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
       final image = await _controller!.takePicture();
       final bytes = await image.readAsBytes();
 
-      // Reconocer persona usando el servicio real
-      final recognition = await SupabaseService.recognizeFace(bytes);
+      // Reconocer persona usando el servicio real con umbral 0.7
+      final recognition = await SupabaseService.recognizeFace(
+        bytes,
+        threshold: 0.7,
+      );
 
-      if (recognition != null && mounted) {
+      if (!mounted) return;
+
+      if (recognition != null) {
+        final confidence = recognition['similarity'] as double;
         setState(() {
           _recognizedPerson = recognition['person'];
-          _recognitionConfidence = recognition['similarity'];
+          _recognitionConfidence = confidence;
           _statusMessage = '✅ ${_recognizedPerson!['name']} - '
               '${(_recognitionConfidence * 100).toStringAsFixed(1)}%';
         });
-      } else if (mounted) {
+      } else {
         setState(() {
           _recognizedPerson = null;
           _statusMessage = '👤 Persona no reconocida';
@@ -139,7 +177,8 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _statusMessage = 'Error procesando: $e';
+          _recognizedPerson = null;
+          _statusMessage = '🔍 Buscando rostro...';
         });
       }
     } finally {
@@ -161,18 +200,18 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
 
     try {
       final image = await _controller!.takePicture();
+      final bytes = await image.readAsBytes();
 
       setState(() {
         _capturedImage = image;
+        _capturedImageBytes = bytes;
         _showCapturePreview = true;
-        _statusMessage = 'Imagen capturada';
+        _statusMessage = 'Imagen capturada - Guardar o recapturar';
+        _isProcessing = false;
       });
     } catch (e) {
       setState(() {
         _statusMessage = 'Error capturando: $e';
-      });
-    } finally {
-      setState(() {
         _isProcessing = false;
       });
     }
@@ -190,8 +229,8 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
     }
   }
 
-  void _showAddImageDialog(int personId) async {
-    final bytes = await _capturedImage!.readAsBytes();
+  void _showAddImageDialog(int personId) {
+    if (_capturedImageBytes == null) return;
 
     showDialog(
       context: context,
@@ -201,12 +240,15 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Image.memory(
-              bytes,
+              _capturedImageBytes!,
               height: 200,
               fit: BoxFit.cover,
             ),
             const SizedBox(height: 10),
-            const Text('¿Añadir esta imagen a la persona existente?'),
+            Text(
+              '¿Añadir esta imagen a ${_recognizedPerson!['name']}?',
+              textAlign: TextAlign.center,
+            ),
           ],
         ),
         actions: [
@@ -217,7 +259,7 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
           TextButton(
             onPressed: () async {
               Navigator.pop(context);
-              await _addImageToPerson(personId, bytes);
+              await _addImageToPerson(personId, _capturedImageBytes!);
             },
             child: const Text('Añadir'),
           ),
@@ -266,7 +308,25 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
         _statusMessage = 'Guardando imagen...';
       });
 
-      // Subir imagen
+      // Validar bytes
+      if (imageBytes.isEmpty) {
+        throw Exception('Imagen vacía, intenta capturar nuevamente');
+      }
+
+      // Generar embedding primero para validar rostro
+      final embedding = await SupabaseService.generateFaceEmbedding(
+        Uint8List.fromList(imageBytes),
+      );
+
+      // Validaciones de embedding
+      if (embedding.isEmpty) {
+        throw Exception('No se detectó rostro. Intenta acercarte y encuadrar.');
+      }
+      if (embedding.length < 128) {
+        throw Exception('Embedding inválido. Vuelve a intentar con mejor luz.');
+      }
+
+      // Subir imagen a storage
       final fileName =
           'person_${personId}_${DateTime.now().millisecondsSinceEpoch}.jpg';
       final imageUrl = await SupabaseService.uploadImage(
@@ -274,17 +334,16 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
         fileName,
       );
 
-      // Generar embedding usando el servicio real
-      final embedding = await SupabaseService.generateFaceEmbedding(
-        Uint8List.fromList(imageBytes),
-      );
-
-      // Añadir a la persona
-      await SupabaseService.addFaceImage(
+      // Guardar en BD
+      final ok = await SupabaseService.addFaceImage(
         personId: personId,
         imageUrl: imageUrl,
         embedding: embedding,
       );
+
+      if (!ok) {
+        throw Exception('No se pudo guardar en la base de datos');
+      }
 
       setState(() {
         _statusMessage = '✅ Imagen añadida exitosamente';
@@ -297,19 +356,43 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
         }
       });
     } catch (e) {
-      setState(() {
-        _statusMessage = '❌ Error: $e';
-      });
+      // Mostrar error amigable
+      if (mounted) {
+        setState(() {
+          _statusMessage = '❌ Error al generar embedding: $e';
+        });
+      }
+      // Diálogo con recomendaciones
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('No se pudo procesar el rostro'),
+            content: const Text(
+              'Consejos:\n\n• Asegúrate de que el rostro esté bien encuadrado dentro del recuadro.\n• Evita contraluces y mantén buena iluminación.\n• Mantén la cámara estable y más cerca del rostro.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Entendido'),
+              ),
+            ],
+          ),
+        );
+      }
     } finally {
-      setState(() {
-        _isProcessing = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+        });
+      }
     }
   }
 
   void _resetCamera() {
     setState(() {
       _capturedImage = null;
+      _capturedImageBytes = null;
       _recognizedPerson = null;
       _recognitionConfidence = 0.0;
       _showCapturePreview = false;
@@ -410,10 +493,17 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
   }
 
   Widget _buildCapturedImage() {
-    if (_capturedImage == null) return Container();
+    if (_capturedImageBytes == null) {
+      return Container(
+        color: Colors.black,
+        child: const Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
 
-    return Image.file(
-      File(_capturedImage!.path),
+    return Image.memory(
+      _capturedImageBytes!,
       fit: BoxFit.cover,
       width: double.infinity,
       height: double.infinity,
@@ -470,11 +560,16 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
                           size: 12,
                         ),
                         const SizedBox(width: 8),
-                        Text(
-                          _statusMessage,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 12,
+                        Flexible(
+                          child: Text(
+                            _statusMessage,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                            ),
+                            textAlign: TextAlign.center,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ],
@@ -487,19 +582,43 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
-                      // Botón para recapturar
+                      // Botón para recapturar o cambiar cámara
                       if (_showCapturePreview)
-                        IconButton(
-                          onPressed: _resetCamera,
-                          icon: const Icon(Icons.refresh,
-                              color: Colors.white, size: 30),
-                          tooltip: 'Nueva foto',
+                        Container(
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Colors.black.withOpacity(0.5),
+                          ),
+                          child: IconButton(
+                            onPressed: _resetCamera,
+                            icon: const Icon(Icons.close,
+                                color: Colors.white, size: 30),
+                            tooltip: 'Cancelar',
+                          ),
+                        )
+                      else
+                        Container(
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Colors.black.withOpacity(0.5),
+                          ),
+                          child: IconButton(
+                            onPressed: _cameras != null && _cameras!.length > 1
+                                ? _switchCamera
+                                : null,
+                            icon: const Icon(Icons.flip_camera_android,
+                                color: Colors.white, size: 30),
+                            tooltip: 'Cambiar cámara',
+                          ),
                         ),
 
                       // Botón capturar/guardar
                       GestureDetector(
-                        onTap:
-                            _showCapturePreview ? _saveToPerson : _captureImage,
+                        onTap: _isProcessing || _isSwitchingCamera
+                            ? null
+                            : (_showCapturePreview
+                                ? _saveToPerson
+                                : _captureImage),
                         child: Container(
                           width: 70,
                           height: 70,
@@ -534,13 +653,19 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
                       ),
 
                       // Botón para ver personas
-                      IconButton(
-                        onPressed: () {
-                          Navigator.pushNamed(context, '/persons');
-                        },
-                        icon: const Icon(Icons.people,
-                            color: Colors.white, size: 30),
-                        tooltip: 'Ver personas',
+                      Container(
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.black.withOpacity(0.5),
+                        ),
+                        child: IconButton(
+                          onPressed: () {
+                            Navigator.pushNamed(context, '/persons');
+                          },
+                          icon: const Icon(Icons.people,
+                              color: Colors.white, size: 30),
+                          tooltip: 'Ver personas',
+                        ),
                       ),
                     ],
                   ),
@@ -548,11 +673,27 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
                   const SizedBox(height: 10),
 
                   // Indicador de procesamiento
-                  if (_isProcessing || _isRecognizing)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 10),
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
+                  if (_isProcessing || _isRecognizing || _isSwitchingCamera)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 10),
+                      child: Column(
+                        children: [
+                          const CircularProgressIndicator(
+                            color: Colors.white,
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            _isSwitchingCamera
+                                ? 'Cambiando cámara...'
+                                : _isProcessing
+                                    ? 'Procesando...'
+                                    : 'Reconociendo...',
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                 ],
@@ -579,14 +720,23 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
               ),
             ),
 
-          // Botón para volver
+          // Botón para volver (siempre visible)
           SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: IconButton(
-                icon:
-                    const Icon(Icons.arrow_back, color: Colors.white, size: 30),
-                onPressed: () => Navigator.pop(context),
+            child: Positioned(
+              top: 0,
+              left: 0,
+              child: Container(
+                margin: const EdgeInsets.all(16.0),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: Colors.black.withOpacity(0.5),
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.arrow_back,
+                      color: Colors.white, size: 30),
+                  onPressed: () => Navigator.pop(context),
+                  tooltip: 'Volver',
+                ),
               ),
             ),
           ),

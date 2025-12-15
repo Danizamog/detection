@@ -1,6 +1,5 @@
 import 'dart:io';
 import 'dart:typed_data';
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'supabase_service.dart';
@@ -127,15 +126,26 @@ class _AddPersonScreenState extends State<AddPersonScreen> {
 
       _createdPersonId = personId;
 
-      // 2. Subir cada imagen y generar embedding
+      // 2. Procesar cada imagen: generar embedding primero, luego subir y guardar
       int successfulUploads = 0;
+      int skippedNoFace = 0;
+      int failedSaves = 0;
 
       for (final imageFile in _selectedImages) {
         try {
           // Leer imagen como bytes
           final imageBytes = await imageFile.readAsBytes();
 
-          // Subir imagen
+          // Generar embedding usando el servicio real (valida rostro)
+          final embedding = await _generateFaceEmbedding(imageBytes);
+
+          // Validaciones de embedding
+          if (embedding.isEmpty || embedding.length < 128) {
+            skippedNoFace++;
+            continue;
+          }
+
+          // Subir imagen solo si el embedding es válido
           final fileName =
               'person_${personId}_${DateTime.now().millisecondsSinceEpoch}_$successfulUploads.jpg';
           final imageUrl = await SupabaseService.uploadImage(
@@ -143,27 +153,33 @@ class _AddPersonScreenState extends State<AddPersonScreen> {
             fileName,
           );
 
-          // Generar embedding usando el servicio real
-          final embedding = await _generateFaceEmbedding(imageBytes);
-          final confidence = 0.95;
-
-          // Añadir a la persona
-          await SupabaseService.addFaceImage(
+          // Guardar imagen + embedding en BD
+          final ok = await SupabaseService.addFaceImage(
             personId: personId,
             imageUrl: imageUrl,
             embedding: embedding,
-            confidence: confidence,
+            confidence: 0.95,
           );
 
-          successfulUploads++;
+          if (ok) {
+            successfulUploads++;
+          } else {
+            failedSaves++;
+          }
         } catch (e) {
           debugPrint('Error subiendo imagen individual: $e');
+          failedSaves++;
         }
       }
 
       if (successfulUploads > 0) {
         setState(() {
           _uploadSuccess = '✅ Persona creada con $successfulUploads imagen(es)';
+          if (skippedNoFace > 0 || failedSaves > 0) {
+            _uploadSuccess =
+                '✅ Persona creada con $successfulUploads imagen(es). '
+                'Omitidas sin rostro: $skippedNoFace, fallidas: $failedSaves';
+          }
         });
 
         // Limpiar formulario después de 3 segundos
@@ -175,8 +191,13 @@ class _AddPersonScreenState extends State<AddPersonScreen> {
           }
         });
       } else {
+        // Si ninguna imagen fue válida, eliminar la persona creada para no dejar registros vacíos
+        try {
+          await SupabaseService.deletePerson(personId);
+        } catch (_) {}
         setState(() {
-          _uploadError = 'Error: No se pudieron subir las imágenes';
+          _uploadError = 'No se pudieron procesar las imágenes. '
+              'Asegúrate de encuadrar bien el rostro y tener buena iluminación.';
         });
       }
     } catch (e) {
@@ -198,29 +219,16 @@ class _AddPersonScreenState extends State<AddPersonScreen> {
       final embedding = await SupabaseService.generateFaceEmbedding(
         Uint8List.fromList(imageBytes),
       );
+      // No guardar si el embedding no es válido
+      if (embedding.isEmpty || embedding.length < 128) {
+        throw Exception('No se detectó un rostro válido en la imagen');
+      }
       return embedding;
     } catch (e) {
       debugPrint('Error generando embedding: $e');
-      // Fallback a embedding simulado si falla
-      return _generateMockEmbedding(imageBytes);
+      // Propagar para que el caller decida omitir/contar como fallo
+      rethrow;
     }
-  }
-
-  Future<List<double>> _generateMockEmbedding(List<int> imageBytes) async {
-    final embedding = List<double>.filled(512, 0.0);
-    final random = _seededRandom(imageBytes);
-
-    for (int i = 0; i < embedding.length; i++) {
-      embedding[i] = (random.nextDouble() * 2) - 1;
-    }
-
-    return embedding;
-  }
-
-  Random _seededRandom(List<int> bytes) {
-    // CORREGIDO: Especificar tipo int en el fold
-    final hash = bytes.fold<int>(0, (int prev, byte) => prev + byte);
-    return Random(DateTime.now().millisecondsSinceEpoch + hash);
   }
 
   void _clearForm() {
@@ -243,6 +251,10 @@ class _AddPersonScreenState extends State<AddPersonScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final screenSize = MediaQuery.of(context).size;
+    final isSmallScreen = screenSize.width < 400;
+    final padding = isSmallScreen ? 12.0 : 20.0;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Registrar Nueva Persona'),
@@ -267,7 +279,7 @@ class _AddPersonScreenState extends State<AddPersonScreen> {
         ],
       ),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
+        padding: EdgeInsets.all(padding),
         child: Form(
           key: _formKey,
           child: Column(
@@ -283,7 +295,7 @@ class _AddPersonScreenState extends State<AddPersonScreen> {
                 ),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 5),
+              SizedBox(height: isSmallScreen ? 4 : 5),
               const Text(
                 'Añade múltiples imágenes para mejor reconocimiento',
                 style: TextStyle(
@@ -293,7 +305,7 @@ class _AddPersonScreenState extends State<AddPersonScreen> {
                 textAlign: TextAlign.center,
               ),
 
-              const SizedBox(height: 30),
+              SizedBox(height: isSmallScreen ? 20 : 30),
 
               // Campo de nombre
               TextFormField(
@@ -336,7 +348,7 @@ class _AddPersonScreenState extends State<AddPersonScreen> {
                 minLines: 2,
               ),
 
-              const SizedBox(height: 25),
+              SizedBox(height: isSmallScreen ? 20 : 25),
 
               // Título de imágenes
               Row(
@@ -376,8 +388,8 @@ class _AddPersonScreenState extends State<AddPersonScreen> {
                 GridView.builder(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: isSmallScreen ? 3 : 4,
                     crossAxisSpacing: 8,
                     mainAxisSpacing: 8,
                     childAspectRatio: 1,

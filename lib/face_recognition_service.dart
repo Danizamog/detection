@@ -21,8 +21,8 @@ class FaceRecognitionService {
     try {
       // Inicializar FaceNet
       final faceNetOptions = InterpreterOptions()
-        ..threads = 4
-        ..useNnApiForAndroid = false;
+        ..threads = 2
+        ..useNnApiForAndroid = true;
 
       _faceNetInterpreter = await Interpreter.fromAsset(
         'assets/models/facenet_512.tflite',
@@ -31,8 +31,8 @@ class FaceRecognitionService {
 
       // Inicializar detector YOLO
       final detectorOptions = InterpreterOptions()
-        ..threads = 4
-        ..useNnApiForAndroid = false;
+        ..threads = 2
+        ..useNnApiForAndroid = true;
 
       _faceDetectorInterpreter = await Interpreter.fromAsset(
         'assets/models/yolo_face_detector.tflite',
@@ -80,15 +80,19 @@ class FaceRecognitionService {
       }
 
       // Post-procesamiento para obtener bounding boxes
-      final faces =
+      final rawFaces =
           _postprocessDetectorOutput(typedOutput, image.width, image.height);
 
-      if (faces.isEmpty) return null;
+      if (rawFaces.isEmpty) return null;
 
-      // Extraer y recortar rostros
+      // Aplicar NMS y ordenar por confianza
+      final faces = _nonMaxSuppression(rawFaces, 0.4)
+        ..sort((a, b) => b.confidence.compareTo(a.confidence));
+
+      // Extraer y recortar rostros con margen
       final faceImages = <Uint8List>[];
       for (final faceRect in faces) {
-        final croppedFace = _cropFace(image, faceRect);
+        final croppedFace = _cropFace(image, faceRect, expandRatio: 0.2);
         if (croppedFace != null) {
           faceImages.add(Uint8List.fromList(img.encodeJpg(croppedFace)));
         }
@@ -240,6 +244,7 @@ class FaceRecognitionService {
             top: rectTop,
             width: rectWidth,
             height: rectHeight,
+            confidence: confidence,
           ));
         }
       }
@@ -248,16 +253,59 @@ class FaceRecognitionService {
     return faces;
   }
 
-  static img.Image? _cropFace(img.Image image, FaceRectangle rect) {
+  static List<FaceRectangle> _nonMaxSuppression(
+    List<FaceRectangle> boxes,
+    double iouThreshold,
+  ) {
+    final sorted = [...boxes]
+      ..sort((a, b) => b.confidence.compareTo(a.confidence));
+    final selected = <FaceRectangle>[];
+
+    while (sorted.isNotEmpty) {
+      final current = sorted.removeAt(0);
+      selected.add(current);
+
+      sorted.removeWhere((b) => _iou(current, b) > iouThreshold);
+    }
+
+    return selected;
+  }
+
+  static double _iou(FaceRectangle a, FaceRectangle b) {
+    final x1 = math.max(a.left, b.left);
+    final y1 = math.max(a.top, b.top);
+    final x2 = math.min(a.right, b.right);
+    final y2 = math.min(a.bottom, b.bottom);
+
+    final interW = math.max(0, x2 - x1);
+    final interH = math.max(0, y2 - y1);
+    final interArea = interW * interH;
+
+    final areaA = a.width * a.height;
+    final areaB = b.width * b.height;
+    final union = areaA + areaB - interArea;
+    if (union == 0) return 0.0;
+    return interArea / union;
+  }
+
+  static img.Image? _cropFace(img.Image image, FaceRectangle rect,
+      {double expandRatio = 0.0}) {
     try {
-      // Usar copyCrop con los parámetros correctos
-      return img.copyCrop(
-        image,
-        x: rect.left,
-        y: rect.top,
-        width: rect.width,
-        height: rect.height,
-      );
+      // Expandir el recorte para incluir contexto alrededor del rostro
+      int cx = rect.left + rect.width ~/ 2;
+      int cy = rect.top + rect.height ~/ 2;
+      int newW = (rect.width * (1 + expandRatio)).toInt();
+      int newH = (rect.height * (1 + expandRatio)).toInt();
+
+      int left = math.max(0, cx - newW ~/ 2);
+      int top = math.max(0, cy - newH ~/ 2);
+      int right = math.min(image.width, left + newW);
+      int bottom = math.min(image.height, top + newH);
+
+      final width = math.max(1, right - left);
+      final height = math.max(1, bottom - top);
+
+      return img.copyCrop(image, x: left, y: top, width: width, height: height);
     } catch (e) {
       print('Error recortando rostro: $e');
       return null;
@@ -289,12 +337,14 @@ class FaceRectangle {
   final int top;
   final int width;
   final int height;
+  final double confidence;
 
   FaceRectangle({
     required this.left,
     required this.top,
     required this.width,
     required this.height,
+    required this.confidence,
   });
 
   int get right => left + width;
