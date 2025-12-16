@@ -9,6 +9,8 @@ abstract class PersonsEvent extends Equatable {
 
 class LoadPersons extends PersonsEvent {}
 
+class RefreshPersons extends PersonsEvent {}
+
 class PersonsUpdated extends PersonsEvent {
   final dynamic persons; // Will be List<Person> from stream
 

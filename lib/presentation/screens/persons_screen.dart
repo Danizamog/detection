@@ -1,3 +1,4 @@
+import 'package:facial_recognition/presentation/bloc/persons/persons_event.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -243,7 +244,11 @@ class PersonsScreen extends StatelessWidget {
             context,
             '/person-detail',
             arguments: {'personId': person.id},
-          );
+          ).then((value) {
+            try {
+              context.read<PersonsBloc>().add(RefreshPersons());
+            } catch (_) {}
+          });
         },
         borderRadius: BorderRadius.circular(15),
         child: Padding(
@@ -330,6 +335,79 @@ class PersonsScreen extends StatelessWidget {
                             ),
                           ),
                         ),
+                      // Botón eliminar persona
+                      Positioned(
+                        top: 8,
+                        left: 8,
+                        child: GestureDetector(
+                          onTap: () async {
+                            final confirmed = await showDialog<bool>(
+                              context: context,
+                              builder: (context) => AlertDialog(
+                                title: const Text('Eliminar persona'),
+                                content: const Text(
+                                    '¿Eliminar a esta persona y todas sus fotos? Esta acción no se puede deshacer.'),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () =>
+                                        Navigator.pop(context, false),
+                                    child: const Text('Cancelar'),
+                                  ),
+                                  TextButton(
+                                    onPressed: () =>
+                                        Navigator.pop(context, true),
+                                    child: const Text(
+                                      'Eliminar',
+                                      style: TextStyle(color: Colors.red),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                            if (confirmed == true) {
+                              try {
+                                final bloc = context.read<PersonsBloc>();
+                                final ok = await bloc.repository
+                                    .deletePerson(person.id);
+                                if (ok) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('✅ Persona eliminada'),
+                                      backgroundColor: Colors.green,
+                                    ),
+                                  );
+                                } else {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('❌ No se pudo eliminar'),
+                                      backgroundColor: Colors.red,
+                                    ),
+                                  );
+                                }
+                              } catch (e) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('❌ Error: $e'),
+                                    backgroundColor: Colors.red,
+                                  ),
+                                );
+                              }
+                            }
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.all(6),
+                            decoration: BoxDecoration(
+                              color: Colors.red.withOpacity(0.9),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.delete,
+                              color: Colors.white,
+                              size: 16,
+                            ),
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 ),

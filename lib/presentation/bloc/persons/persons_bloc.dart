@@ -11,6 +11,7 @@ class PersonsBloc extends Bloc<PersonsEvent, PersonsState> {
 
   PersonsBloc({required this.repository}) : super(PersonsInitial()) {
     on<LoadPersons>(_onLoadPersons);
+    on<RefreshPersons>(_onRefreshPersons);
     on<PersonsUpdated>(_onPersonsUpdated);
     on<AddPerson>(_onAddPerson);
     on<UpdatePerson>(_onUpdatePerson);
@@ -30,6 +31,16 @@ class PersonsBloc extends Bloc<PersonsEvent, PersonsState> {
         );
   }
 
+  Future<void> _onRefreshPersons(
+      RefreshPersons event, Emitter<PersonsState> emit) async {
+    try {
+      final persons = await repository.getPersons();
+      emit(PersonsLoaded(persons));
+    } catch (e) {
+      emit(PersonsError('Error al refrescar: $e'));
+    }
+  }
+
   void _onPersonsUpdated(PersonsUpdated event, Emitter<PersonsState> emit) {
     if (event.persons is List<Person>) {
       emit(PersonsLoaded(event.persons as List<Person>));
@@ -46,6 +57,7 @@ class PersonsBloc extends Bloc<PersonsEvent, PersonsState> {
         description: event.description,
       );
       emit(PersonAdded(personId));
+      add(RefreshPersons());
 
       // Restaurar el estado de personas cargadas
       if (currentState is PersonsLoaded) {
@@ -72,6 +84,7 @@ class PersonsBloc extends Bloc<PersonsEvent, PersonsState> {
 
       if (success) {
         emit(PersonUpdated());
+        add(RefreshPersons());
       } else {
         emit(const PersonActionError('Error al actualizar persona'));
       }
@@ -96,6 +109,7 @@ class PersonsBloc extends Bloc<PersonsEvent, PersonsState> {
 
       if (success) {
         emit(PersonDeleted());
+        add(RefreshPersons());
       } else {
         emit(const PersonActionError('Error al eliminar persona'));
       }
@@ -127,6 +141,7 @@ class PersonsBloc extends Bloc<PersonsEvent, PersonsState> {
 
       if (success) {
         emit(FaceImageAdded());
+        add(RefreshPersons());
       } else {
         emit(const PersonActionError('Error al añadir imagen facial'));
       }
@@ -153,6 +168,7 @@ class PersonsBloc extends Bloc<PersonsEvent, PersonsState> {
 
       if (success) {
         emit(FaceImageDeleted());
+        add(RefreshPersons());
       } else {
         emit(const PersonActionError('Error al eliminar imagen facial'));
       }

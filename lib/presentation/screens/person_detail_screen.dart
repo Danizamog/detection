@@ -24,11 +24,21 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _descriptionController = TextEditingController();
   bool _isEditing = false;
+  bool _didLoadArgs = false;
 
   @override
   void initState() {
     super.initState();
-    _loadPersonData();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Cargar datos una vez que el contexto y la ruta estén disponibles
+    if (!_didLoadArgs) {
+      _didLoadArgs = true;
+      _loadPersonData();
+    }
   }
 
   @override
