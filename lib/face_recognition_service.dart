@@ -13,97 +13,157 @@ class FaceRecognitionService {
   static const int EMBEDDING_SIZE = 512;
 
   // Dimensiones del modelo de detección
-  static const int DETECTOR_INPUT_SIZE = 416;
+  static const int DETECTOR_INPUT_SIZE = 128;
 
   static Future<void> initialize() async {
-    if (_initialized) return;
+  if (_initialized) return;
 
-    try {
-      // Inicializar FaceNet
-      final faceNetOptions = InterpreterOptions()
-        ..threads = 2
-        ..useNnApiForAndroid = true;
+  try {
+    // Inicializar FaceNet
+    final faceNetOptions = InterpreterOptions()
+      ..threads = 2
+      ..useNnApiForAndroid = true;
 
-      _faceNetInterpreter = await Interpreter.fromAsset(
-        'assets/models/facenet_512.tflite',
-        options: faceNetOptions,
-      );
+    _faceNetInterpreter = await Interpreter.fromAsset(
+      'assets/models/facenet_512.tflite',
+      options: faceNetOptions,
+    );
 
-      // Inicializar detector YOLO
-      final detectorOptions = InterpreterOptions()
-        ..threads = 2
-        ..useNnApiForAndroid = true;
+    // Inicializar detector YOLO
+    final detectorOptions = InterpreterOptions()
+      ..threads = 2
+      ..useNnApiForAndroid = true;
 
-      _faceDetectorInterpreter = await Interpreter.fromAsset(
-        'assets/models/yolo_face_detector.tflite',
-        options: detectorOptions,
-      );
+    _faceDetectorInterpreter = await Interpreter.fromAsset(
+      'assets/models/yolo_face_detector.tflite',
+      options: detectorOptions,
+    );
 
-      _initialized = true;
-      print('✅ Modelos de IA cargados correctamente');
-    } catch (e) {
-      print('❌ Error cargando modelos de IA: $e');
-      rethrow;
+    // 🔍 DEBUGGING - Ver dimensiones reales del modelo
+    print('==========================================');
+    print('🔍 ANALIZANDO MODELO YOLO:');
+    print('==========================================');
+    
+    final inputTensors = _faceDetectorInterpreter!.getInputTensors();
+    final outputTensors = _faceDetectorInterpreter!.getOutputTensors();
+    
+    print('\n📥 INPUT TENSORS (${inputTensors.length}):');
+    for (int i = 0; i < inputTensors.length; i++) {
+      final tensor = inputTensors[i];
+      print('  Input $i:');
+      print('    - Shape: ${tensor.shape}');
+      print('    - Type: ${tensor.type}');
+      print('    - Name: ${tensor.name}');
     }
+    
+    print('\n📤 OUTPUT TENSORS (${outputTensors.length}):');
+    for (int i = 0; i < outputTensors.length; i++) {
+      final tensor = outputTensors[i];
+      print('  Output $i:');
+      print('    - Shape: ${tensor.shape}');
+      print('    - Type: ${tensor.type}');
+      print('    - Name: ${tensor.name}');
+    }
+    
+    print('\n==========================================');
+
+    _initialized = true;
+    print('✅ Modelos de IA cargados correctamente');
+  } catch (e) {
+    print('❌ Error cargando modelos de IA: $e');
+    rethrow;
   }
+}
+
+
 
   static Future<List<Uint8List>?> detectFaces(Uint8List imageBytes) async {
-    if (!_initialized || _faceDetectorInterpreter == null) {
-      await initialize();
-    }
+  if (!_initialized || _faceDetectorInterpreter == null) {
+    await initialize();
+  }
 
-    try {
-      final image = img.decodeImage(imageBytes);
-      if (image == null) return null;
-
-      // Preprocesar imagen para el detector
-      final input = _preprocessForDetector(image);
-
-      // Ejecutar inferencia
-      final output =
-          List<double>.filled(1 * 10647 * 6, 0.0).reshape([1, 10647, 6]);
-
-      _faceDetectorInterpreter!.run(input, output);
-
-      // Convertir output a List<List<List<double>>>
-      final List<List<List<double>>> typedOutput = [];
-      for (int i = 0; i < output.shape[0]; i++) {
-        final List<List<double>> innerList1 = [];
-        for (int j = 0; j < output.shape[1]; j++) {
-          final List<double> innerList2 = [];
-          for (int k = 0; k < output.shape[2]; k++) {
-            innerList2.add(output[i][j][k].toDouble());
-          }
-          innerList1.add(innerList2);
-        }
-        typedOutput.add(innerList1);
-      }
-
-      // Post-procesamiento para obtener bounding boxes
-      final rawFaces =
-          _postprocessDetectorOutput(typedOutput, image.width, image.height);
-
-      if (rawFaces.isEmpty) return null;
-
-      // Aplicar NMS y ordenar por confianza
-      final faces = _nonMaxSuppression(rawFaces, 0.4)
-        ..sort((a, b) => b.confidence.compareTo(a.confidence));
-
-      // Extraer y recortar rostros con margen
-      final faceImages = <Uint8List>[];
-      for (final faceRect in faces) {
-        final croppedFace = _cropFace(image, faceRect, expandRatio: 0.2);
-        if (croppedFace != null) {
-          faceImages.add(Uint8List.fromList(img.encodeJpg(croppedFace)));
-        }
-      }
-
-      return faceImages.isNotEmpty ? faceImages : null;
-    } catch (e) {
-      print('❌ Error detectando rostros: $e');
+  try {
+    print('📸 Decodificando imagen...');
+    final image = img.decodeImage(imageBytes);
+    if (image == null) {
+      print('❌ No se pudo decodificar la imagen');
       return null;
     }
+
+    print('✅ Imagen: ${image.width}x${image.height}');
+
+    // Preprocesar imagen para el detector (128x128)
+    print('🔄 Preprocesando...');
+    final input = _preprocessForDetector(image);
+
+    // Crear outputs según las dimensiones reales del modelo
+    // Output 0: [1, 896, 16] - bounding boxes
+    // Output 1: [1, 896, 1] - scores
+    final outputBoxes = List<double>.filled(1 * 896 * 16, 0.0)
+        .reshape([1, 896, 16]);
+    
+    final outputScores = List<double>.filled(1 * 896 * 1, 0.0)
+        .reshape([1, 896, 1]);
+
+    print('🤖 Ejecutando modelo YOLO...');
+    
+    // El modelo tiene 2 outputs, así que usamos runForMultipleInputs
+    _faceDetectorInterpreter!.runForMultipleInputs(
+      [input],
+      {
+        0: outputBoxes,  // regressors
+        1: outputScores, // classificators
+      }
+    );
+    
+    print('✅ Modelo ejecutado');
+
+    // Post-procesamiento
+    print('🔍 Post-procesando detecciones...');
+    final rawFaces = _postprocessYoloOutput(
+      outputBoxes, 
+      outputScores,
+      image.width, 
+      image.height
+    );
+
+    if (rawFaces.isEmpty) {
+      print('! No se detectaron rostros en la imagen');
+      return null;
+    }
+
+    print('😊 Detectados ${rawFaces.length} rostros');
+
+    // Aplicar NMS y ordenar por confianza
+    final faces = _nonMaxSuppression(rawFaces, 0.4)
+      ..sort((a, b) => b.confidence.compareTo(a.confidence));
+
+    print('✅ ${faces.length} rostros después de NMS');
+
+    // Extraer y recortar rostros con margen
+    final List<Uint8List> faceImages = [];
+    for (int i = 0; i < faces.length; i++) {
+      final faceRect = faces[i];
+      print('✂️ Recortando rostro ${i + 1}: '
+          'left=${faceRect.left}, top=${faceRect.top}, '
+          'width=${faceRect.width}, height=${faceRect.height}, '
+          'confidence=${faceRect.confidence.toStringAsFixed(2)}');
+      
+      final croppedFace = _cropFace(image, faceRect, expandRatio: 0.2);
+      if (croppedFace != null) {
+        faceImages.add(Uint8List.fromList(img.encodeJpg(croppedFace)));
+      }
+    }
+
+    print('✅ Extraídos ${faceImages.length} rostros');
+    return faceImages.isNotEmpty ? faceImages : null;
+  } catch (e, stackTrace) {
+    print('❌ Error detectando rostros: $e');
+    print('📍 Stack trace: $stackTrace');
+    return null;
   }
+}
+
 
   static Future<List<double>> getFaceEmbedding(Uint8List faceImageBytes) async {
     if (!_initialized || _faceNetInterpreter == null) {
@@ -204,54 +264,81 @@ class FaceRecognitionService {
     return input;
   }
 
-  static List<FaceRectangle> _postprocessDetectorOutput(
-    List<List<List<double>>> output,
-    int originalWidth,
-    int originalHeight,
-  ) {
-    final faces = <FaceRectangle>[];
-    const double confidenceThreshold = 0.5;
+  static List<FaceRectangle> _postprocessYoloOutput(
+  List outputBoxes,
+  List outputScores,
+  int originalWidth,
+  int originalHeight,
+) {
+  final faces = <FaceRectangle>[];
+  const double confidenceThreshold = 0.5;
 
-    // output[0] contiene las detecciones
-    final detections = output[0];
+  try {
+    final boxes = outputBoxes[0];
+    final scores = outputScores[0];
+    
+    print('📊 Procesando 896 detecciones');
 
-    for (final detection in detections) {
-      if (detection.length < 5) continue;
+    for (int i = 0; i < 896; i++) {
+  final double confidence = scores[i][0];
+  
+  // 🔥 DEBUG: Imprimir TODO lo que tenga confidence > 0.4
+  if (confidence > 0.4) {
+    final box = boxes[i];
+    print('🔬 Det $i (conf=${confidence.toStringAsFixed(2)}): xC=${box[0].toStringAsFixed(2)}, yC=${box[1].toStringAsFixed(2)}, w=${box[2].toStringAsFixed(2)}, h=${box[3].toStringAsFixed(2)}');
+  }
+  
+  if (confidence < confidenceThreshold) continue;
 
-      final confidence = detection[4];
+  final box = boxes[i];
+  
+  // ⚠️ TU MODELO DEVUELVE COORDENADAS ABSOLUTAS EN 128x128, NO NORMALIZADAS
+  final double xCenter = box[0];
+  final double yCenter = box[1];
+  final double width = box[2];
+  final double height = box[3];
 
-      if (confidence > confidenceThreshold) {
-        final x = (detection[0] * originalWidth).toInt();
-        final y = (detection[1] * originalHeight).toInt();
-        final w = (detection[2] * originalWidth).toInt();
-        final h = (detection[3] * originalHeight).toInt();
+  // 🔥 PRIMERO: Normalizar a [0-1]
+  final double xCenterNorm = xCenter / DETECTOR_INPUT_SIZE;
+  final double yCenterNorm = yCenter / DETECTOR_INPUT_SIZE;
+  final double widthNorm = width / DETECTOR_INPUT_SIZE;
+  final double heightNorm = height / DETECTOR_INPUT_SIZE;
 
-        // Ajustar bounding box
-        final left = (x - w / 2).toInt();
-        final top = (y - h / 2).toInt();
-        final right = (x + w / 2).toInt();
-        final bottom = (y + h / 2).toInt();
+  // 🔥 SEGUNDO: Escalar a la imagen original
+  final double left = (xCenterNorm - widthNorm / 2) * originalWidth;
+  final double top = (yCenterNorm - heightNorm / 2) * originalHeight;
+  final double right = (xCenterNorm + widthNorm / 2) * originalWidth;
+  final double bottom = (yCenterNorm + heightNorm / 2) * originalHeight;
 
-        // Asegurar que esté dentro de los límites
-        final rectLeft = math.max(0, left);
-        final rectTop = math.max(0, top);
-        final rectWidth = math.min(originalWidth, right) - rectLeft;
-        final rectHeight = math.min(originalHeight, bottom) - rectTop;
+  final int clampedLeft = left.clamp(0, originalWidth).toInt();
+  final int clampedTop = top.clamp(0, originalHeight).toInt();
+  final int clampedRight = right.clamp(0, originalWidth).toInt();
+  final int clampedBottom = bottom.clamp(0, originalHeight).toInt();
 
-        if (rectWidth > 20 && rectHeight > 20) {
-          faces.add(FaceRectangle(
-            left: rectLeft,
-            top: rectTop,
-            width: rectWidth,
-            height: rectHeight,
-            confidence: confidence,
-          ));
-        }
-      }
-    }
+  final int rectWidth = clampedRight - clampedLeft;
+  final int rectHeight = clampedBottom - clampedTop;
 
+  if (rectWidth < 20 || rectHeight < 20) continue;
+  
+  final double aspectRatio = rectWidth / rectHeight;
+  if (aspectRatio < 0.3 || aspectRatio > 3.0) continue;
+
+  faces.add(FaceRectangle(
+    left: clampedLeft,
+    top: clampedTop,
+    width: rectWidth,
+    height: rectHeight,
+    confidence: confidence,
+  ));
+}
+
+    print('✅ Encontrados ${faces.length} rostros válidos');
+    return faces;
+  } catch (e) {
+    print('❌ Error en post-procesamiento: $e');
     return faces;
   }
+}
 
   static List<FaceRectangle> _nonMaxSuppression(
     List<FaceRectangle> boxes,
