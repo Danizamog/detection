@@ -1,10 +1,13 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'supabase_service.dart';
+import '../bloc/recognition/recognition_bloc.dart';
+import '../bloc/recognition/recognition_event.dart';
+import '../bloc/recognition/recognition_state.dart';
+import '../bloc/persons/persons_bloc.dart';
 
 class CameraScreenReal extends StatefulWidget {
   const CameraScreenReal({super.key});
@@ -152,38 +155,15 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
       final image = await _controller!.takePicture();
       final bytes = await image.readAsBytes();
 
-      // Reconocer persona usando el servicio real con umbral 0.5 (más permisivo)
-      final recognition = await SupabaseService.recognizeFace(
-        bytes,
-        threshold: 0.5,
-      );
-
-      if (!mounted) return;
-
-      if (recognition != null) {
-        final confidence = recognition['similarity'] as double;
-        setState(() {
-          _recognizedPerson = recognition['person'];
-          _recognitionConfidence = confidence;
-          _statusMessage = '✅ ${_recognizedPerson!['name']} - '
-              '${(_recognitionConfidence * 100).toStringAsFixed(1)}%';
-        });
-      } else {
-        setState(() {
-          _recognizedPerson = null;
-          _statusMessage = '👤 Persona no reconocida';
-        });
-      }
+      // Reconocer persona usando RecognitionBloc
+      context.read<RecognitionBloc>().add(
+            RecognizeFaceFromImage(imageBytes: bytes, threshold: 0.5),
+          );
     } catch (e) {
       if (mounted) {
         setState(() {
           _recognizedPerson = null;
           _statusMessage = '🔍 Buscando rostro...';
-        });
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
           _isRecognizing = false;
         });
       }
@@ -314,7 +294,8 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
       }
 
       // Generar embedding primero para validar rostro
-      final embedding = await SupabaseService.generateFaceEmbedding(
+      final repository = context.read<PersonsBloc>().repository;
+      final embedding = await repository.generateFaceEmbedding(
         Uint8List.fromList(imageBytes),
       );
 
@@ -329,13 +310,13 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
       // Subir imagen a storage
       final fileName =
           'person_${personId}_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      final imageUrl = await SupabaseService.uploadImage(
+      final imageUrl = await repository.uploadImage(
         Uint8List.fromList(imageBytes),
         fileName,
       );
 
       // Guardar en BD
-      final ok = await SupabaseService.addFaceImage(
+      final ok = await repository.addFaceImage(
         personId: personId,
         imageUrl: imageUrl,
         embedding: embedding,
@@ -512,235 +493,267 @@ class _CameraScreenRealState extends State<CameraScreenReal> {
   }
 
   @override
-  @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: GestureDetector(
-        // ← AGREGAR ESTO
-        behavior: HitTestBehavior.opaque, // ← IMPORTANTE
-        onTap: () {
-          // Absorber toques - no hacer nada
-          debugPrint('Toque absorbido por GestureDetector principal');
-        },
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            // Vista de cámara o imagen capturada
-            _showCapturePreview ? _buildCapturedImage() : _buildCameraPreview(),
+    return BlocListener<RecognitionBloc, RecognitionState>(
+      listener: (context, state) {
+        if (state is RecognitionSuccess) {
+          setState(() {
+            _recognizedPerson = {
+              'name': state.result.personName,
+              'description': state.result.personDescription,
+              'id': state.result.personId,
+            };
+            _recognitionConfidence = state.result.similarity;
+            _statusMessage = '✅ ${state.result.personName} - '
+                '${(state.result.similarity * 100).toStringAsFixed(1)}%';
+            _isRecognizing = false;
+          });
+        } else if (state is RecognitionNotFound) {
+          setState(() {
+            _recognizedPerson = null;
+            _statusMessage = '👤 Persona no reconocida';
+            _isRecognizing = false;
+          });
+        } else if (state is RecognitionError) {
+          setState(() {
+            _recognizedPerson = null;
+            _statusMessage = '🔍 Buscando rostro...';
+            _isRecognizing = false;
+          });
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: GestureDetector(
+          // ← AGREGAR ESTO
+          behavior: HitTestBehavior.opaque, // ← IMPORTANTE
+          onTap: () {
+            // Absorber toques - no hacer nada
+            debugPrint('Toque absorbido por GestureDetector principal');
+          },
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              // Vista de cámara o imagen capturada
+              _showCapturePreview
+                  ? _buildCapturedImage()
+                  : _buildCameraPreview(),
 
-            // Controles
-            Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
-              child: IgnorePointer(
-                // ← CAMBIAR A IgnorePointer
-                ignoring: false, // Permite toques en los children
-                child: Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.transparent,
-                        Colors.black.withOpacity(0.9),
-                      ],
-                    ),
-                  ),
-                  child: Column(
-                    children: [
-                      // Barra de estado
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 15, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.5),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.circle,
-                              color: _isRecognizing
-                                  ? Colors.orange
-                                  : _recognizedPerson != null
-                                      ? Colors.green
-                                      : Colors.white,
-                              size: 12,
-                            ),
-                            const SizedBox(width: 8),
-                            Flexible(
-                              child: Text(
-                                _statusMessage,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 12,
-                                ),
-                                textAlign: TextAlign.center,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      const SizedBox(height: 20),
-
-                      // Botones principales
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          // Botón para recapturar o cambiar cámara
-                          if (_showCapturePreview)
-                            _buildCircleButton(
-                              icon: Icons.close,
-                              onPressed: _resetCamera,
-                              tooltip: 'Cancelar',
-                            )
-                          else
-                            _buildCircleButton(
-                              icon: Icons.flip_camera_android,
-                              onPressed:
-                                  _cameras != null && _cameras!.length > 1
-                                      ? _switchCamera
-                                      : null,
-                              tooltip: 'Cambiar cámara',
-                            ),
-
-                          // Botón capturar/guardar
-                          GestureDetector(
-                            onTap: _isProcessing || _isSwitchingCamera
-                                ? null
-                                : (_showCapturePreview
-                                    ? _saveToPerson
-                                    : _captureImage),
-                            child: Container(
-                              width: 70,
-                              height: 70,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                border: Border.all(
-                                  color: _showCapturePreview
-                                      ? Colors.green
-                                      : Colors.white,
-                                  width: 3,
-                                ),
-                                color: Colors.transparent,
-                              ),
-                              child: Center(
-                                child: Container(
-                                  width: 58,
-                                  height: 58,
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: _showCapturePreview
-                                        ? Colors.green
-                                        : Colors.white,
-                                  ),
-                                  child: Icon(
-                                    _showCapturePreview
-                                        ? Icons.save
-                                        : Icons.camera,
-                                    color: Colors.black,
-                                    size: 30,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-
-                          // Botón para ver personas
-                          _buildCircleButton(
-                            icon: Icons.people,
-                            onPressed: () {
-                              Navigator.pushNamed(context, '/persons');
-                            },
-                            tooltip: 'Ver personas',
-                          ),
+              // Controles
+              Positioned(
+                bottom: 0,
+                left: 0,
+                right: 0,
+                child: IgnorePointer(
+                  // ← CAMBIAR A IgnorePointer
+                  ignoring: false, // Permite toques en los children
+                  child: Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Colors.transparent,
+                          Colors.black.withOpacity(0.9),
                         ],
                       ),
-
-                      const SizedBox(height: 10),
-
-                      // Indicador de procesamiento
-                      if (_isProcessing || _isRecognizing || _isSwitchingCamera)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 10),
-                          child: Column(
+                    ),
+                    child: Column(
+                      children: [
+                        // Barra de estado
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 15, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.5),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
                             children: [
-                              const CircularProgressIndicator(
-                                color: Colors.white,
+                              Icon(
+                                Icons.circle,
+                                color: _isRecognizing
+                                    ? Colors.orange
+                                    : _recognizedPerson != null
+                                        ? Colors.green
+                                        : Colors.white,
+                                size: 12,
                               ),
-                              const SizedBox(height: 5),
-                              Text(
-                                _isSwitchingCamera
-                                    ? 'Cambiando cámara...'
-                                    : _isProcessing
-                                        ? 'Procesando...'
-                                        : 'Reconociendo...',
-                                style: const TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 11,
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: Text(
+                                  _statusMessage,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
                               ),
                             ],
                           ),
                         ),
-                    ],
+
+                        const SizedBox(height: 20),
+
+                        // Botones principales
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            // Botón para recapturar o cambiar cámara
+                            if (_showCapturePreview)
+                              _buildCircleButton(
+                                icon: Icons.close,
+                                onPressed: _resetCamera,
+                                tooltip: 'Cancelar',
+                              )
+                            else
+                              _buildCircleButton(
+                                icon: Icons.flip_camera_android,
+                                onPressed:
+                                    _cameras != null && _cameras!.length > 1
+                                        ? _switchCamera
+                                        : null,
+                                tooltip: 'Cambiar cámara',
+                              ),
+
+                            // Botón capturar/guardar
+                            GestureDetector(
+                              onTap: _isProcessing || _isSwitchingCamera
+                                  ? null
+                                  : (_showCapturePreview
+                                      ? _saveToPerson
+                                      : _captureImage),
+                              child: Container(
+                                width: 70,
+                                height: 70,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: _showCapturePreview
+                                        ? Colors.green
+                                        : Colors.white,
+                                    width: 3,
+                                  ),
+                                  color: Colors.transparent,
+                                ),
+                                child: Center(
+                                  child: Container(
+                                    width: 58,
+                                    height: 58,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: _showCapturePreview
+                                          ? Colors.green
+                                          : Colors.white,
+                                    ),
+                                    child: Icon(
+                                      _showCapturePreview
+                                          ? Icons.save
+                                          : Icons.camera,
+                                      color: Colors.black,
+                                      size: 30,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+
+                            // Botón para ver personas
+                            _buildCircleButton(
+                              icon: Icons.people,
+                              onPressed: () {
+                                Navigator.pushNamed(context, '/persons');
+                              },
+                              tooltip: 'Ver personas',
+                            ),
+                          ],
+                        ),
+
+                        const SizedBox(height: 10),
+
+                        // Indicador de procesamiento
+                        if (_isProcessing ||
+                            _isRecognizing ||
+                            _isSwitchingCamera)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 10),
+                            child: Column(
+                              children: [
+                                const CircularProgressIndicator(
+                                  color: Colors.white,
+                                ),
+                                const SizedBox(height: 5),
+                                Text(
+                                  _isSwitchingCamera
+                                      ? 'Cambiando cámara...'
+                                      : _isProcessing
+                                          ? 'Procesando...'
+                                          : 'Reconociendo...',
+                                  style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                 ),
               ),
-            ),
 
-            // Indicador de carga inicial
-            if (_isLoading)
-              Container(
-                color: Colors.black,
-                child: const Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      CircularProgressIndicator(),
-                      SizedBox(height: 20),
-                      Text(
-                        'Inicializando cámara...',
-                        style: TextStyle(color: Colors.white),
+              // Indicador de carga inicial
+              if (_isLoading)
+                Container(
+                  color: Colors.black,
+                  child: const Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        CircularProgressIndicator(),
+                        SizedBox(height: 20),
+                        Text(
+                          'Inicializando cámara...',
+                          style: TextStyle(color: Colors.white),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+              // Botón para volver (siempre visible)
+              Positioned(
+                top: MediaQuery.of(context).padding.top + 16,
+                left: 16,
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: () => Navigator.pop(context),
+                    customBorder: const CircleBorder(),
+                    child: Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.black.withOpacity(0.7),
                       ),
-                    ],
-                  ),
-                ),
-              ),
-
-            // Botón para volver (siempre visible)
-            Positioned(
-              top: MediaQuery.of(context).padding.top + 16,
-              left: 16,
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: () => Navigator.pop(context),
-                  customBorder: const CircleBorder(),
-                  child: Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.black.withOpacity(0.7),
-                    ),
-                    child: const Icon(
-                      Icons.arrow_back,
-                      color: Colors.white,
-                      size: 24,
+                      child: const Icon(
+                        Icons.arrow_back,
+                        color: Colors.white,
+                        size: 24,
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

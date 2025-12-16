@@ -1,8 +1,9 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:image_picker/image_picker.dart';
-import 'supabase_service.dart';
+import '../bloc/persons/persons_bloc.dart';
 
 class AddPersonScreen extends StatefulWidget {
   const AddPersonScreen({super.key});
@@ -118,8 +119,10 @@ class _AddPersonScreenState extends State<AddPersonScreen> {
     });
 
     try {
+      final repository = context.read<PersonsBloc>().repository;
+
       // 1. Crear la persona
-      final personId = await SupabaseService.addPerson(
+      final personId = await repository.addPerson(
         name: _nameController.text.trim(),
         description: _descriptionController.text.trim(),
       );
@@ -148,13 +151,13 @@ class _AddPersonScreenState extends State<AddPersonScreen> {
           // Subir imagen solo si el embedding es válido
           final fileName =
               'person_${personId}_${DateTime.now().millisecondsSinceEpoch}_$successfulUploads.jpg';
-          final imageUrl = await SupabaseService.uploadImage(
+          final imageUrl = await repository.uploadImage(
             Uint8List.fromList(imageBytes),
             fileName,
           );
 
           // Guardar imagen + embedding en BD
-          final ok = await SupabaseService.addFaceImage(
+          final ok = await repository.addFaceImage(
             personId: personId,
             imageUrl: imageUrl,
             embedding: embedding,
@@ -193,7 +196,7 @@ class _AddPersonScreenState extends State<AddPersonScreen> {
       } else {
         // Si ninguna imagen fue válida, eliminar la persona creada para no dejar registros vacíos
         try {
-          await SupabaseService.deletePerson(personId);
+          await repository.deletePerson(personId);
         } catch (_) {}
         setState(() {
           _uploadError = 'No se pudieron procesar las imágenes. '
@@ -215,8 +218,9 @@ class _AddPersonScreenState extends State<AddPersonScreen> {
 
   Future<List<double>> _generateFaceEmbedding(List<int> imageBytes) async {
     try {
+      final repository = context.read<PersonsBloc>().repository;
       // Usar el servicio real de reconocimiento facial
-      final embedding = await SupabaseService.generateFaceEmbedding(
+      final embedding = await repository.generateFaceEmbedding(
         Uint8List.fromList(imageBytes),
       );
       // No guardar si el embedding no es válido

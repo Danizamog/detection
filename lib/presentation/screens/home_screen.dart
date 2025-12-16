@@ -1,22 +1,42 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import '../bloc/persons/persons_bloc.dart';
+import '../bloc/persons/persons_state.dart';
+import '../../domain/entities/person.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final persons = Provider.of<List<Map<String, dynamic>>>(context);
-    final screenSize = MediaQuery.of(context).size;
-    final isSmallScreen = screenSize.width < 400;
-    final isMediumScreen = screenSize.width >= 400 && screenSize.width < 600;
-    final isLargeScreen = screenSize.width >= 600;
+    return BlocBuilder<PersonsBloc, PersonsState>(
+      builder: (context, state) {
+        final persons = state is PersonsLoaded ? state.persons : <Person>[];
 
-    // CORREGIDO: Especificar que el fold retorna un int
-    final int totalImages = persons.fold(
-        0, (int sum, person) => sum + (person['imageCount'] as int? ?? 0));
+        final screenSize = MediaQuery.of(context).size;
+        final isSmallScreen = screenSize.width < 400;
+        final isMediumScreen =
+            screenSize.width >= 400 && screenSize.width < 600;
+        final isLargeScreen = screenSize.width >= 600;
 
-    // Valores responsive
+        final int totalImages =
+            persons.fold(0, (int sum, person) => sum + person.imageCount);
+
+        return _buildHomeContent(context, persons, totalImages, screenSize,
+            isSmallScreen, isMediumScreen, isLargeScreen);
+      },
+    );
+  }
+
+  Widget _buildHomeContent(
+    BuildContext context,
+    List<Person> persons,
+    int totalImages,
+    Size screenSize,
+    bool isSmallScreen,
+    bool isMediumScreen,
+    bool isLargeScreen,
+  ) {
     final appBarHeight = isSmallScreen
         ? 200.0
         : isMediumScreen

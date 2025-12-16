@@ -1,10 +1,11 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'supabase_service.dart';
-import 'dart:math';
+import '../bloc/persons/persons_bloc.dart';
+import '../../domain/entities/person.dart';
 
 class PersonDetailScreen extends StatefulWidget {
   const PersonDetailScreen({super.key});
@@ -15,7 +16,7 @@ class PersonDetailScreen extends StatefulWidget {
 
 class _PersonDetailScreenState extends State<PersonDetailScreen> {
   late int _personId;
-  Map<String, dynamic>? _person;
+  Person? _person;
   bool _isLoading = true;
   bool _isUploading = false;
   String? _errorMessage;
@@ -48,14 +49,15 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
     _personId = args['personId'];
 
     try {
-      final persons = await SupabaseService.getPersons();
+      final repository = context.read<PersonsBloc>().repository;
+      final persons = await repository.getPersons();
       _person = persons.firstWhere(
-        (p) => p['id'] == _personId,
+        (p) => p.id == _personId,
         orElse: () => throw Exception('Persona no encontrada'),
       );
 
-      _nameController.text = _person?['name'] ?? '';
-      _descriptionController.text = _person?['description'] ?? '';
+      _nameController.text = _person?.name ?? '';
+      _descriptionController.text = _person?.description ?? '';
     } catch (e) {
       _errorMessage = 'Error cargando datos: $e';
     } finally {
@@ -135,7 +137,8 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
 
     if (confirmed == true) {
       try {
-        final success = await SupabaseService.deleteFaceImage(imageId);
+        final repository = context.read<PersonsBloc>().repository;
+        final success = await repository.deleteFaceImage(imageId);
         if (success) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -182,15 +185,16 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
           }
 
           // Subir imagen si el embedding es válido
+          final repository = context.read<PersonsBloc>().repository;
           final fileName =
               'person_${_personId}_add_${DateTime.now().millisecondsSinceEpoch}_$successfulUploads.jpg';
-          final imageUrl = await SupabaseService.uploadImage(
+          final imageUrl = await repository.uploadImage(
             Uint8List.fromList(imageBytes),
             fileName,
           );
 
           // Añadir a la persona
-          final ok = await SupabaseService.addFaceImage(
+          final ok = await repository.addFaceImage(
             personId: _personId,
             imageUrl: imageUrl,
             embedding: embedding,
@@ -254,7 +258,8 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
     });
 
     try {
-      final success = await SupabaseService.updatePerson(
+      final repository = context.read<PersonsBloc>().repository;
+      final success = await repository.updatePerson(
         id: _personId,
         name: _nameController.text.trim(),
         description: _descriptionController.text.trim(),
@@ -305,7 +310,8 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
 
     if (confirmed == true) {
       try {
-        final success = await SupabaseService.deletePerson(_personId);
+        final repository = context.read<PersonsBloc>().repository;
+        final success = await repository.deletePerson(_personId);
         if (success) {
           Navigator.pop(context, {'deleted': true});
         }
@@ -319,7 +325,8 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
 
   Future<List<double>> _generateFaceEmbedding(List<int> imageBytes) async {
     try {
-      final embedding = await SupabaseService.generateFaceEmbedding(
+      final repository = context.read<PersonsBloc>().repository;
+      final embedding = await repository.generateFaceEmbedding(
         Uint8List.fromList(imageBytes),
       );
       if (embedding.isEmpty || embedding.length < 128) {
@@ -368,7 +375,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
       itemCount: images.length,
       itemBuilder: (context, index) {
         final image = images[index];
-        final imageUrl = image['imageUrl'] as String?;
+        final imageUrl = image.imageUrl;
 
         return Stack(
           children: [
@@ -393,7 +400,7 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
               top: 4,
               right: 4,
               child: GestureDetector(
-                onTap: () => _removeExistingImage(image['id'] as int),
+                onTap: () => _removeExistingImage(image.id),
                 child: Container(
                   padding: const EdgeInsets.all(4),
                   decoration: const BoxDecoration(
@@ -537,10 +544,10 @@ class _PersonDetailScreenState extends State<PersonDetailScreen> {
       );
     }
 
-    final images = _person?['images'] as List<dynamic>? ?? [];
-    final personName = _person?['name'] as String? ?? 'Sin nombre';
-    final personDescription = _person?['description'] as String?;
-    final personId = _person?['id'] as int?;
+    final images = _person?.images ?? [];
+    final personName = _person?.name ?? 'Sin nombre';
+    final personDescription = _person?.description;
+    final personId = _person?.id;
 
     return Scaffold(
       appBar: AppBar(

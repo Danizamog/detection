@@ -3,23 +3,19 @@ import 'package:image/image.dart' as img;
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'dart:math' as math;
 
-class FaceRecognitionService {
-  static Interpreter? _faceNetInterpreter;
-  static Interpreter? _faceDetectorInterpreter;
-  static bool _initialized = false;
+class TFliteLocalDataSource {
+  Interpreter? _faceNetInterpreter;
+  Interpreter? _faceDetectorInterpreter;
+  bool _initialized = false;
 
-  // Dimensiones del modelo FaceNet
   static const int FACE_NET_INPUT_SIZE = 160;
   static const int EMBEDDING_SIZE = 512;
-
-  // Dimensiones del modelo de detección
   static const int DETECTOR_INPUT_SIZE = 128;
 
-  static Future<void> initialize() async {
+  Future<void> initialize() async {
     if (_initialized) return;
 
     try {
-      // Inicializar FaceNet
       final faceNetOptions = InterpreterOptions()
         ..threads = 2
         ..useNnApiForAndroid = true;
@@ -29,7 +25,6 @@ class FaceRecognitionService {
         options: faceNetOptions,
       );
 
-      // Inicializar detector YOLO
       final detectorOptions = InterpreterOptions()
         ..threads = 2
         ..useNnApiForAndroid = true;
@@ -39,34 +34,6 @@ class FaceRecognitionService {
         options: detectorOptions,
       );
 
-      // 🔍 DEBUGGING - Ver dimensiones reales del modelo
-      print('==========================================');
-      print('🔍 ANALIZANDO MODELO YOLO:');
-      print('==========================================');
-
-      final inputTensors = _faceDetectorInterpreter!.getInputTensors();
-      final outputTensors = _faceDetectorInterpreter!.getOutputTensors();
-
-      print('\n📥 INPUT TENSORS (${inputTensors.length}):');
-      for (int i = 0; i < inputTensors.length; i++) {
-        final tensor = inputTensors[i];
-        print('  Input $i:');
-        print('    - Shape: ${tensor.shape}');
-        print('    - Type: ${tensor.type}');
-        print('    - Name: ${tensor.name}');
-      }
-
-      print('\n📤 OUTPUT TENSORS (${outputTensors.length}):');
-      for (int i = 0; i < outputTensors.length; i++) {
-        final tensor = outputTensors[i];
-        print('  Output $i:');
-        print('    - Shape: ${tensor.shape}');
-        print('    - Type: ${tensor.type}');
-        print('    - Name: ${tensor.name}');
-      }
-
-      print('\n==========================================');
-
       _initialized = true;
       print('✅ Modelos de IA cargados correctamente');
     } catch (e) {
@@ -75,90 +42,54 @@ class FaceRecognitionService {
     }
   }
 
-  static Future<List<Uint8List>?> detectFaces(Uint8List imageBytes) async {
+  Future<List<Uint8List>?> detectFaces(Uint8List imageBytes) async {
     if (!_initialized || _faceDetectorInterpreter == null) {
       await initialize();
     }
 
     try {
-      print('📸 Decodificando imagen...');
       final image = img.decodeImage(imageBytes);
-      if (image == null) {
-        print('❌ No se pudo decodificar la imagen');
-        return null;
-      }
+      if (image == null) return null;
 
-      print('✅ Imagen: ${image.width}x${image.height}');
-
-      // Preprocesar imagen para el detector (128x128)
-      print('🔄 Preprocesando...');
       final input = _preprocessForDetector(image);
 
-      // Crear outputs según las dimensiones reales del modelo
-      // Output 0: [1, 896, 16] - bounding boxes
-      // Output 1: [1, 896, 1] - scores
       final outputBoxes =
           List<double>.filled(1 * 896 * 16, 0.0).reshape([1, 896, 16]);
-
       final outputScores =
           List<double>.filled(1 * 896 * 1, 0.0).reshape([1, 896, 1]);
 
-      print('🤖 Ejecutando modelo YOLO...');
-
-      // El modelo tiene 2 outputs, así que usamos runForMultipleInputs
       _faceDetectorInterpreter!.runForMultipleInputs([
         input
       ], {
-        0: outputBoxes, // regressors
-        1: outputScores, // classificators
+        0: outputBoxes,
+        1: outputScores,
       });
 
-      print('✅ Modelo ejecutado');
-
-      // Post-procesamiento
-      print('🔍 Post-procesando detecciones...');
       final rawFaces = _postprocessYoloOutput(
           outputBoxes, outputScores, image.width, image.height);
 
-      if (rawFaces.isEmpty) {
-        print('! No se detectaron rostros en la imagen');
-        return null;
-      }
+      if (rawFaces.isEmpty) return null;
 
-      print('😊 Detectados ${rawFaces.length} rostros');
-
-      // Aplicar NMS y ordenar por confianza
       final faces = _nonMaxSuppression(rawFaces, 0.4)
         ..sort((a, b) => b.confidence.compareTo(a.confidence));
 
-      print('✅ ${faces.length} rostros después de NMS');
-
-      // Extraer y recortar rostros con margen; si la caja viene en 0,0 o muy pequeña
-      // hacemos un recorte central grande para evitar embeddings basura
       final List<Uint8List> faceImages = [];
       for (int i = 0; i < faces.length; i++) {
         final faceRect = _adjustRectIfInvalid(image, faces[i]);
-        print('✂️ Recortando rostro ${i + 1}: '
-            'left=${faceRect.left}, top=${faceRect.top}, '
-            'width=${faceRect.width}, height=${faceRect.height}, '
-            'confidence=${faceRect.confidence.toStringAsFixed(2)}');
-
         final croppedFace = _cropFace(image, faceRect, expandRatio: 0.2);
         if (croppedFace != null) {
           faceImages.add(Uint8List.fromList(img.encodeJpg(croppedFace)));
         }
       }
 
-      print('✅ Extraídos ${faceImages.length} rostros');
       return faceImages.isNotEmpty ? faceImages : null;
-    } catch (e, stackTrace) {
+    } catch (e) {
       print('❌ Error detectando rostros: $e');
-      print('📍 Stack trace: $stackTrace');
       return null;
     }
   }
 
-  static Future<List<double>> getFaceEmbedding(Uint8List faceImageBytes) async {
+  Future<List<double>> getFaceEmbedding(Uint8List faceImageBytes) async {
     if (!_initialized || _faceNetInterpreter == null) {
       await initialize();
     }
@@ -167,16 +98,12 @@ class FaceRecognitionService {
       final image = img.decodeImage(faceImageBytes);
       if (image == null) return List<double>.filled(EMBEDDING_SIZE, 0.0);
 
-      // Preprocesar para FaceNet
       final input = _preprocessForFaceNet(image);
-
-      // Ejecutar inferencia
       final output = List<double>.filled(1 * EMBEDDING_SIZE, 0.0)
           .reshape([1, EMBEDDING_SIZE]);
 
       _faceNetInterpreter!.run(input, output);
 
-      // Normalizar el embedding
       final embedding = List<double>.from(output[0]);
       return _normalizeEmbedding(embedding);
     } catch (e) {
@@ -185,15 +112,24 @@ class FaceRecognitionService {
     }
   }
 
-  static List<double> _normalizeEmbedding(List<double> embedding) {
-    // Calcular norma L2
+  double calculateSimilarity(List<double> emb1, List<double> emb2) {
+    if (emb1.length != emb2.length || emb1.isEmpty) return 0.0;
+
+    double similarity = 0.0;
+    for (int i = 0; i < emb1.length; i++) {
+      similarity += emb1[i] * emb2[i];
+    }
+
+    return similarity;
+  }
+
+  List<double> _normalizeEmbedding(List<double> embedding) {
     double norm = 0.0;
     for (final value in embedding) {
       norm += value * value;
     }
     norm = math.sqrt(norm);
 
-    // Normalizar dividiendo por la norma
     if (norm > 0) {
       return embedding.map((value) => value / norm).toList();
     }
@@ -201,15 +137,13 @@ class FaceRecognitionService {
     return embedding;
   }
 
-  static List<List<List<List<double>>>> _preprocessForFaceNet(img.Image image) {
-    // Redimensionar a 160x160
+  List<List<List<List<double>>>> _preprocessForFaceNet(img.Image image) {
     final resized = img.copyResize(
       image,
       width: FACE_NET_INPUT_SIZE,
       height: FACE_NET_INPUT_SIZE,
     );
 
-    // Crear tensor 4D: [1, height, width, 3]
     final input = List.generate(
         1,
         (_) => List.generate(
@@ -220,24 +154,22 @@ class FaceRecognitionService {
     for (int y = 0; y < FACE_NET_INPUT_SIZE; y++) {
       for (int x = 0; x < FACE_NET_INPUT_SIZE; x++) {
         final pixel = resized.getPixelSafe(x, y);
-        input[0][y][x][0] = pixel.r.toDouble() / 127.5 - 1; // R
-        input[0][y][x][1] = pixel.g.toDouble() / 127.5 - 1; // G
-        input[0][y][x][2] = pixel.b.toDouble() / 127.5 - 1; // B
+        input[0][y][x][0] = pixel.r.toDouble() / 127.5 - 1;
+        input[0][y][x][1] = pixel.g.toDouble() / 127.5 - 1;
+        input[0][y][x][2] = pixel.b.toDouble() / 127.5 - 1;
       }
     }
 
     return input;
   }
 
-  static List<List<List<List<double>>>> _preprocessForDetector(
-      img.Image image) {
+  List<List<List<List<double>>>> _preprocessForDetector(img.Image image) {
     final resized = img.copyResize(
       image,
       width: DETECTOR_INPUT_SIZE,
       height: DETECTOR_INPUT_SIZE,
     );
 
-    // Crear tensor 4D: [1, height, width, 3]
     final input = List.generate(
         1,
         (_) => List.generate(
@@ -248,62 +180,51 @@ class FaceRecognitionService {
     for (int y = 0; y < DETECTOR_INPUT_SIZE; y++) {
       for (int x = 0; x < DETECTOR_INPUT_SIZE; x++) {
         final pixel = resized.getPixelSafe(x, y);
-        input[0][y][x][0] = pixel.r.toDouble() / 255.0; // R
-        input[0][y][x][1] = pixel.g.toDouble() / 255.0; // G
-        input[0][y][x][2] = pixel.b.toDouble() / 255.0; // B
+        input[0][y][x][0] = pixel.r.toDouble() / 255.0;
+        input[0][y][x][1] = pixel.g.toDouble() / 255.0;
+        input[0][y][x][2] = pixel.b.toDouble() / 255.0;
       }
     }
 
     return input;
   }
 
-  static List<FaceRectangle> _postprocessYoloOutput(
+  List<FaceRectangle> _postprocessYoloOutput(
     List outputBoxes,
     List outputScores,
     int originalWidth,
     int originalHeight,
   ) {
     final faces = <FaceRectangle>[];
-    const double confidenceThreshold =
-        0.3; // más permisivo para no perder rostros
+    const double confidenceThreshold = 0.3;
 
     try {
       final boxes = outputBoxes[0];
       final scores = outputScores[0];
 
-      print('📊 Procesando 896 detecciones');
-
       for (int i = 0; i < 896; i++) {
         final double confidence = scores[i][0];
-
         if (confidence < confidenceThreshold) continue;
 
         final box = boxes[i];
-
         final double xCenter = box[0];
         final double yCenter = box[1];
         final double width = box[2];
         final double height = box[3];
 
-        // Detectar si el modelo ya devuelve valores normalizados (0-1) o en 128x128
         final bool alreadyNormalized = xCenter.abs() <= 1.2 &&
             yCenter.abs() <= 1.2 &&
             width <= 1.2 &&
             height <= 1.2;
 
-        double left;
-        double top;
-        double right;
-        double bottom;
+        double left, top, right, bottom;
 
         if (alreadyNormalized) {
-          // Coordenadas ya están en rango 0-1
           left = (xCenter - width / 2) * originalWidth;
           top = (yCenter - height / 2) * originalHeight;
           right = (xCenter + width / 2) * originalWidth;
           bottom = (yCenter + height / 2) * originalHeight;
         } else {
-          // Coordenadas vienen en pixeles de la imagen 128x128, normalizamos y luego escalamos
           final double xCenterNorm = xCenter / DETECTOR_INPUT_SIZE;
           final double yCenterNorm = yCenter / DETECTOR_INPUT_SIZE;
           final double widthNorm = width / DETECTOR_INPUT_SIZE;
@@ -337,7 +258,6 @@ class FaceRecognitionService {
         ));
       }
 
-      print('✅ Encontrados ${faces.length} rostros válidos');
       return faces;
     } catch (e) {
       print('❌ Error en post-procesamiento: $e');
@@ -345,7 +265,7 @@ class FaceRecognitionService {
     }
   }
 
-  static List<FaceRectangle> _nonMaxSuppression(
+  List<FaceRectangle> _nonMaxSuppression(
     List<FaceRectangle> boxes,
     double iouThreshold,
   ) {
@@ -356,16 +276,13 @@ class FaceRecognitionService {
     while (sorted.isNotEmpty) {
       final current = sorted.removeAt(0);
       selected.add(current);
-
       sorted.removeWhere((b) => _iou(current, b) > iouThreshold);
     }
 
     return selected;
   }
 
-  // Si el detector devuelve cajas en (0,0) o muy pequeñas, recortamos una caja central grande.
-  static FaceRectangle _adjustRectIfInvalid(
-      img.Image image, FaceRectangle rect) {
+  FaceRectangle _adjustRectIfInvalid(img.Image image, FaceRectangle rect) {
     final int minValidW = (image.width * 0.1).toInt();
     final int minValidH = (image.height * 0.1).toInt();
     final bool isCorner = rect.left == 0 && rect.top == 0;
@@ -391,7 +308,7 @@ class FaceRecognitionService {
     );
   }
 
-  static double _iou(FaceRectangle a, FaceRectangle b) {
+  double _iou(FaceRectangle a, FaceRectangle b) {
     final x1 = math.max(a.left, b.left);
     final y1 = math.max(a.top, b.top);
     final x2 = math.min(a.right, b.right);
@@ -408,10 +325,9 @@ class FaceRecognitionService {
     return interArea / union;
   }
 
-  static img.Image? _cropFace(img.Image image, FaceRectangle rect,
+  img.Image? _cropFace(img.Image image, FaceRectangle rect,
       {double expandRatio = 0.0}) {
     try {
-      // Expandir el recorte para incluir contexto alrededor del rostro
       int cx = rect.left + rect.width ~/ 2;
       int cy = rect.top + rect.height ~/ 2;
       int newW = (rect.width * (1 + expandRatio)).toInt();
@@ -432,26 +348,13 @@ class FaceRecognitionService {
     }
   }
 
-  static double calculateSimilarity(List<double> emb1, List<double> emb2) {
-    if (emb1.length != emb2.length || emb1.isEmpty) return 0.0;
-
-    double similarity = 0.0;
-    for (int i = 0; i < emb1.length; i++) {
-      similarity += emb1[i] * emb2[i];
-    }
-
-    // El coseno similarity ya está normalizado porque los embeddings están normalizados
-    return similarity;
-  }
-
-  static void dispose() {
+  void dispose() {
     _faceNetInterpreter?.close();
     _faceDetectorInterpreter?.close();
     _initialized = false;
   }
 }
 
-// Clase auxiliar para representar un rectángulo facial
 class FaceRectangle {
   final int left;
   final int top;

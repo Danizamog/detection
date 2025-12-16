@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import '../bloc/persons/persons_bloc.dart';
+import '../bloc/persons/persons_state.dart';
+import '../../domain/entities/person.dart';
 
 class PersonsScreen extends StatelessWidget {
   const PersonsScreen({super.key});
@@ -12,7 +15,6 @@ class PersonsScreen extends StatelessWidget {
     final String? mode =
         (args is Map<String, dynamic>) ? args['mode'] as String? : null;
     final bool addImagesMode = mode == 'add-images';
-    final persons = Provider.of<List<Map<String, dynamic>>>(context);
 
     // Responsive values
     final screenSize = MediaQuery.of(context).size;
@@ -29,6 +31,39 @@ class PersonsScreen extends StatelessWidget {
             ? 16.0
             : 20.0;
 
+    return BlocBuilder<PersonsBloc, PersonsState>(
+      builder: (context, state) {
+        if (state is PersonsLoading) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+
+        if (state is PersonsError) {
+          return Scaffold(
+            body: Center(
+              child: Text('Error: ${state.message}'),
+            ),
+          );
+        }
+
+        final persons = state is PersonsLoaded ? state.persons : <Person>[];
+
+        return _buildContent(context, persons, addImagesMode,
+            gridCrossAxisCount, padding, screenSize, isSmallScreen);
+      },
+    );
+  }
+
+  Widget _buildContent(
+    BuildContext context,
+    List<Person> persons,
+    bool addImagesMode,
+    int gridCrossAxisCount,
+    double padding,
+    Size screenSize,
+    bool isSmallScreen,
+  ) {
     return Scaffold(
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () {
@@ -183,21 +218,19 @@ class PersonsScreen extends StatelessWidget {
     );
   }
 
-  int _totalImages(List<Map<String, dynamic>> persons) {
-    // CORREGIDO: Especificar tipo int en el fold
+  int _totalImages(List<Person> persons) {
     return persons.fold<int>(0, (int total, person) {
-      final imageCount = person['imageCount'] as int? ?? 0;
-      return total + imageCount;
+      return total + person.imageCount;
     });
   }
 
-  Widget _buildPersonCard(BuildContext context, Map<String, dynamic> person) {
-    final images = person['images'] as List<dynamic>? ?? [];
-    final imageCount = person['imageCount'] as int? ?? 0;
+  Widget _buildPersonCard(BuildContext context, Person person) {
+    final images = person.images;
+    final imageCount = person.imageCount;
     final hasImages = imageCount > 0;
-    final personName = person['name'] as String? ?? 'Sin nombre';
-    final personDescription = person['description'] as String?;
-    final createdAt = person['createdAt'] as String?;
+    final personName = person.name;
+    final personDescription = person.description;
+    final createdAt = person.createdAt.toIso8601String();
 
     return Card(
       elevation: 3,
@@ -209,7 +242,7 @@ class PersonsScreen extends StatelessWidget {
           Navigator.pushNamed(
             context,
             '/person-detail',
-            arguments: {'personId': person['id']},
+            arguments: {'personId': person.id},
           );
         },
         borderRadius: BorderRadius.circular(15),
@@ -228,7 +261,7 @@ class PersonsScreen extends StatelessWidget {
                     image: hasImages && images.isNotEmpty
                         ? DecorationImage(
                             image: CachedNetworkImageProvider(
-                              (images.first['imageUrl'] as String?) ?? '',
+                              images.first.imageUrl,
                             ),
                             fit: BoxFit.cover,
                             colorFilter: ColorFilter.mode(
@@ -318,7 +351,7 @@ class PersonsScreen extends StatelessWidget {
               const SizedBox(height: 4),
 
               // Descripción
-              if (personDescription != null && personDescription.isNotEmpty)
+              if (personDescription.isNotEmpty)
                 Text(
                   personDescription,
                   style: TextStyle(

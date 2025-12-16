@@ -1,39 +1,82 @@
+import 'package:facial_recognition/presentation/screens/error_app.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import 'home_screen.dart';
-import 'camera_screen_real.dart';
-import 'persons_screen.dart';
-import 'add_person_screen.dart';
-import 'person_detail_screen.dart';
-import 'supabase_service.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'presentation/screens/home_screen.dart';
+import 'presentation/screens/camera_screen_real.dart';
+import 'presentation/screens/persons_screen.dart';
+import 'presentation/screens/add_person_screen.dart';
+import 'presentation/screens/person_detail_screen.dart';
+import 'data/datasources/supabase_remote_datasource.dart';
+import 'data/datasources/tflite_local_datasource.dart';
+import 'data/repositories/person_repository_impl.dart';
+import 'data/repositories/face_recognition_repository_impl.dart';
+import 'presentation/bloc/persons/persons_bloc.dart';
+import 'presentation/bloc/persons/persons_event.dart';
+import 'presentation/bloc/recognition/recognition_bloc.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   try {
-    await SupabaseService.initialize();
+    // Inicializar Supabase
+    await Supabase.initialize(
+      url: 'https://uvdiwniodvndsxembmxz.supabase.co',
+      anonKey:
+          'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV2ZGl3bmlvZHZuZHN4ZW1ibXh6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ4ODYzMDYsImV4cCI6MjA4MDQ2MjMwNn0.qBgh6Xjfi-mnSxES_4bVwrgQPxtqBrIqx8ryWPAoY4U',
+    );
+
+    // Inicializar TFLite
+    final tfliteDataSource = TFliteLocalDataSource();
+    await tfliteDataSource.initialize();
+
     print('✅ Aplicación inicializada correctamente');
+
+    runApp(FacialRecognitionApp(
+      supabaseClient: Supabase.instance.client,
+      tfliteDataSource: tfliteDataSource,
+    ));
   } catch (e) {
     print('❌ Error inicializando la aplicación: $e');
+    runApp(const ErrorApp());
   }
-  
-  runApp(const FacialRecognitionApp());
 }
 
 class FacialRecognitionApp extends StatelessWidget {
-  const FacialRecognitionApp({super.key});
+  final SupabaseClient supabaseClient;
+  final TFliteLocalDataSource tfliteDataSource;
+
+  const FacialRecognitionApp({
+    super.key,
+    required this.supabaseClient,
+    required this.tfliteDataSource,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return MultiProvider(
+    // Crear datasources
+    final supabaseDataSource = SupabaseRemoteDataSource(supabaseClient);
+
+    // Crear repositorios
+    final personRepository = PersonRepositoryImpl(
+      remoteDataSource: supabaseDataSource,
+      localDataSource: tfliteDataSource,
+    );
+
+    final faceRecognitionRepository = FaceRecognitionRepositoryImpl(
+      localDataSource: tfliteDataSource,
+      remoteDataSource: supabaseDataSource,
+    );
+
+    return MultiBlocProvider(
       providers: [
-        StreamProvider<List<Map<String, dynamic>>>(
-          create: (_) => SupabaseService.getPersonsStream(),
-          initialData: const [],
-          catchError: (_, error) {
-            print('⚠️ Error en stream de personas: $error');
-            return const [];
-          },
+        BlocProvider(
+          create: (context) =>
+              PersonsBloc(repository: personRepository)..add(LoadPersons()),
+        ),
+        BlocProvider(
+          create: (context) =>
+              RecognitionBloc(repository: faceRecognitionRepository),
         ),
       ],
       child: MaterialApp(
@@ -122,12 +165,6 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
     Icons.camera_alt_outlined,
     Icons.people_outline,
   ];
-
-  @override
-  void dispose() {
-    SupabaseService.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {

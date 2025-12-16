@@ -16,7 +16,8 @@ dependencies:
   camera: any
   image_picker: any
   permission_handler: ^12.0.1
-  provider: any
+  flutter_bloc: ^8.1.6
+  equatable: ^2.0.5
   flutter_animate: any
   path_provider: any
   path: any
