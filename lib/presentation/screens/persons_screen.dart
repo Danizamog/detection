@@ -81,6 +81,15 @@ class PersonsScreen extends StatelessWidget {
           // Header
           SliverAppBar(
             expandedHeight: 150,
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                onPressed: () {
+                  context.read<PersonsBloc>().add(RefreshPersons());
+                },
+                tooltip: 'Refrescar',
+              ),
+            ],
             flexibleSpace: FlexibleSpaceBar(
               background: Container(
                 decoration: const BoxDecoration(
