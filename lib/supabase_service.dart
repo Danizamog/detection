@@ -54,9 +54,11 @@ class SupabaseService {
 
   static Future<List<Map<String, dynamic>>> getPersons() async {
     try {
+      // Hay dos FKs en Supabase (face_images_person_id_fkey y fk_person),
+      // elegimos explícitamente una para evitar PGRST201 (relación ambigua)
       final response = await client.from('persons').select('''
-            *,
-            face_images (*)
+        *,
+        face_images:face_images_person_id_fkey (*)
           ''').order('created_at', ascending: false);
 
       if (response.isEmpty) return [];
