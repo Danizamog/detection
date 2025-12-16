@@ -265,80 +265,90 @@ class FaceRecognitionService {
   }
 
   static List<FaceRectangle> _postprocessYoloOutput(
-  List outputBoxes,
-  List outputScores,
-  int originalWidth,
-  int originalHeight,
-) {
-  final faces = <FaceRectangle>[];
-  const double confidenceThreshold = 0.5;
+    List outputBoxes,
+    List outputScores,
+    int originalWidth,
+    int originalHeight,
+  ) {
+    final faces = <FaceRectangle>[];
+    const double confidenceThreshold = 0.3; // más permisivo para no perder rostros
 
-  try {
-    final boxes = outputBoxes[0];
-    final scores = outputScores[0];
-    
-    print('📊 Procesando 896 detecciones');
+    try {
+      final boxes = outputBoxes[0];
+      final scores = outputScores[0];
 
-    for (int i = 0; i < 896; i++) {
-  final double confidence = scores[i][0];
-  
-  // 🔥 DEBUG: Imprimir TODO lo que tenga confidence > 0.4
-  if (confidence > 0.4) {
-    final box = boxes[i];
-    print('🔬 Det $i (conf=${confidence.toStringAsFixed(2)}): xC=${box[0].toStringAsFixed(2)}, yC=${box[1].toStringAsFixed(2)}, w=${box[2].toStringAsFixed(2)}, h=${box[3].toStringAsFixed(2)}');
+      print('📊 Procesando 896 detecciones');
+
+      for (int i = 0; i < 896; i++) {
+        final double confidence = scores[i][0];
+
+        if (confidence < confidenceThreshold) continue;
+
+        final box = boxes[i];
+
+        final double xCenter = box[0];
+        final double yCenter = box[1];
+        final double width = box[2];
+        final double height = box[3];
+
+        // Detectar si el modelo ya devuelve valores normalizados (0-1) o en 128x128
+        final bool alreadyNormalized =
+            xCenter.abs() <= 1.2 && yCenter.abs() <= 1.2 &&
+            width <= 1.2 && height <= 1.2;
+
+        double left;
+        double top;
+        double right;
+        double bottom;
+
+        if (alreadyNormalized) {
+          // Coordenadas ya están en rango 0-1
+          left = (xCenter - width / 2) * originalWidth;
+          top = (yCenter - height / 2) * originalHeight;
+          right = (xCenter + width / 2) * originalWidth;
+          bottom = (yCenter + height / 2) * originalHeight;
+        } else {
+          // Coordenadas vienen en pixeles de la imagen 128x128, normalizamos y luego escalamos
+          final double xCenterNorm = xCenter / DETECTOR_INPUT_SIZE;
+          final double yCenterNorm = yCenter / DETECTOR_INPUT_SIZE;
+          final double widthNorm = width / DETECTOR_INPUT_SIZE;
+          final double heightNorm = height / DETECTOR_INPUT_SIZE;
+
+          left = (xCenterNorm - widthNorm / 2) * originalWidth;
+          top = (yCenterNorm - heightNorm / 2) * originalHeight;
+          right = (xCenterNorm + widthNorm / 2) * originalWidth;
+          bottom = (yCenterNorm + heightNorm / 2) * originalHeight;
+        }
+
+        final int clampedLeft = left.clamp(0, originalWidth).toInt();
+        final int clampedTop = top.clamp(0, originalHeight).toInt();
+        final int clampedRight = right.clamp(0, originalWidth).toInt();
+        final int clampedBottom = bottom.clamp(0, originalHeight).toInt();
+
+        final int rectWidth = clampedRight - clampedLeft;
+        final int rectHeight = clampedBottom - clampedTop;
+
+        if (rectWidth < 10 || rectHeight < 10) continue;
+
+        final double aspectRatio = rectWidth / rectHeight;
+        if (aspectRatio < 0.25 || aspectRatio > 3.5) continue;
+
+        faces.add(FaceRectangle(
+          left: clampedLeft,
+          top: clampedTop,
+          width: rectWidth,
+          height: rectHeight,
+          confidence: confidence,
+        ));
+      }
+
+      print('✅ Encontrados ${faces.length} rostros válidos');
+      return faces;
+    } catch (e) {
+      print('❌ Error en post-procesamiento: $e');
+      return faces;
+    }
   }
-  
-  if (confidence < confidenceThreshold) continue;
-
-  final box = boxes[i];
-  
-  // ⚠️ TU MODELO DEVUELVE COORDENADAS ABSOLUTAS EN 128x128, NO NORMALIZADAS
-  final double xCenter = box[0];
-  final double yCenter = box[1];
-  final double width = box[2];
-  final double height = box[3];
-
-  // 🔥 PRIMERO: Normalizar a [0-1]
-  final double xCenterNorm = xCenter / DETECTOR_INPUT_SIZE;
-  final double yCenterNorm = yCenter / DETECTOR_INPUT_SIZE;
-  final double widthNorm = width / DETECTOR_INPUT_SIZE;
-  final double heightNorm = height / DETECTOR_INPUT_SIZE;
-
-  // 🔥 SEGUNDO: Escalar a la imagen original
-  final double left = (xCenterNorm - widthNorm / 2) * originalWidth;
-  final double top = (yCenterNorm - heightNorm / 2) * originalHeight;
-  final double right = (xCenterNorm + widthNorm / 2) * originalWidth;
-  final double bottom = (yCenterNorm + heightNorm / 2) * originalHeight;
-
-  final int clampedLeft = left.clamp(0, originalWidth).toInt();
-  final int clampedTop = top.clamp(0, originalHeight).toInt();
-  final int clampedRight = right.clamp(0, originalWidth).toInt();
-  final int clampedBottom = bottom.clamp(0, originalHeight).toInt();
-
-  final int rectWidth = clampedRight - clampedLeft;
-  final int rectHeight = clampedBottom - clampedTop;
-
-  if (rectWidth < 20 || rectHeight < 20) continue;
-  
-  final double aspectRatio = rectWidth / rectHeight;
-  if (aspectRatio < 0.3 || aspectRatio > 3.0) continue;
-
-  faces.add(FaceRectangle(
-    left: clampedLeft,
-    top: clampedTop,
-    width: rectWidth,
-    height: rectHeight,
-    confidence: confidence,
-  ));
-}
-
-    print('✅ Encontrados ${faces.length} rostros válidos');
-    return faces;
-  } catch (e) {
-    print('❌ Error en post-procesamiento: $e');
-    return faces;
-  }
-}
 
   static List<FaceRectangle> _nonMaxSuppression(
     List<FaceRectangle> boxes,
